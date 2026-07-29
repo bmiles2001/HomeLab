@@ -258,17 +258,58 @@ sudo mkdir -p /srv/{immich,caddy,infisical,frigate}
 sudo chown -R $USER:$USER /srv
 ```
 
-### Phase 2.5 — NVIDIA Container Toolkit
+### Phase 2.5 — NVIDIA driver, then the Container Toolkit
 
 Do this before deploying Immich, because `stacks/immich/compose.yml` now asks
 for a GPU and the stack won't come up without it.
 
-```bash
-nvidia-smi          # driver must be >= 545 for Immich's CUDA image (CUDA 12.3)
+**Two separate installs, in this order.** The toolkit is only a bridge — it
+exposes a driver that must already exist on the host. Installing the toolkit
+alone gets you:
+
+```
+nvidia-container-cli: initialization error: load library failed:
+libnvidia-ml.so.1: cannot open shared object file
 ```
 
-Install the toolkit and register it with Docker — the driver on the host is not
-enough on its own, the runtime has to be wired in:
+which means exactly one thing: no driver.
+
+#### 1. The driver (host)
+
+Full detail in [`home-server-build-plan.md`](../home-server-build-plan.md) §7.
+
+```bash
+ubuntu-drivers devices          # see what's recommended for the 3080
+sudo ubuntu-drivers install nvidia:595-open
+sudo reboot
+```
+
+The 3080 is Ampere, so the `-open` kernel modules are supported and preferred.
+Take whatever version `ubuntu-drivers devices` marks `recommended` — it must be
+**>= 545** for Immich's CUDA 12.3 image, and anything current comfortably is.
+
+After the reboot:
+
+```bash
+nvidia-smi                      # must print the 3080
+```
+
+If it prints nothing or says it can't communicate with the driver, check Secure
+Boot before reinstalling anything:
+
+```bash
+mokutil --sb-state
+```
+
+If it's enabled, the DKMS module is built but unsigned, so the kernel silently
+refuses to load it — the failure looks identical to the driver not being
+installed. Either enroll the MOK (reboot, catch the blue MOK Manager screen,
+"Enroll MOK", enter the password the installer asked for) or disable Secure
+Boot in the BIOS, which is what §2 of the build plan recommends for this box.
+
+#### 2. The toolkit (docker)
+
+Only once `nvidia-smi` works:
 
 ```bash
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
@@ -284,11 +325,23 @@ sudo systemctl restart docker
 Verify from inside a container, not from the host:
 
 ```bash
-docker run --rm --gpus all nvidia/cuda:12.3.1-base-ubuntu22.04 nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 nvidia-smi
 ```
 
 If that prints your 3080, Immich's ML container will start. `./bootstrap.sh`
 also checks this and warns if the toolkit isn't registered.
+
+> **Verified on forge, 2026-07-29:** `nvidia-driver-595-open`, driver 595.84,
+> CUDA 13.2, RTX 3080 10GB, idle at 11W. Container passthrough confirmed with
+> the command above. Secure Boot was not an issue.
+
+#### If you're short on time today
+
+This is a reboot and a BIOS trip, and it is not on the critical path for having
+photos working. To keep moving, drop Immich's ML back to CPU — in
+`stacks/immich/compose.yml`, remove the `-cuda` suffix from the image tag and
+delete the `deploy.resources` block. Everything works; face detection and smart
+search just take longer on the first import. Put it back when the driver is in.
 
 **Note on `unattended-upgrades`:** NVIDIA driver packages updating out from
 under a running container is a classic 3am failure. If ML starts breaking after
