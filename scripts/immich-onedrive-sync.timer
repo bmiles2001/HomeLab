@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly Immich -> OneDrive mirror
+
+[Timer]
+# 02:30 every night, jittered so it doesn't collide with other cron work.
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=30m
+# If the box was asleep or off at 02:30, run once it comes back.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

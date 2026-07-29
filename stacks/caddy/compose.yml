@@ -1,0 +1,52 @@
+name: caddy
+
+# The only stack that publishes ports to the LAN. Everything else is reached
+# through it over the shared `proxy` network, by container name.
+#
+# Deploy:  ./scripts/deploy.sh caddy
+#
+# Ports 80/443 are privileged, and rootful Docker binds them without ceremony.
+#
+# Because Docker writes its iptables rules ahead of UFW's, these ports are
+# reachable from the LAN whether or not `ufw allow` says so. That is intended
+# here - it is a mistake anywhere else. See docs/forge-session-runbook.md.
+
+services:
+  caddy:
+    container_name: caddy
+    # Stock Caddy has no DNS providers compiled in. This is the standard
+    # prebuilt image with the Cloudflare DNS module included.
+    image: ghcr.io/caddybuilds/caddy-cloudflare:${CADDY_VERSION:-2.10}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      # Injected by `infisical run` at deploy time; never written to disk.
+      # The token needs Zone > DNS > Edit on your zone and nothing more.
+      CF_API_TOKEN: ${CF_API_TOKEN:?not injected - deploy via scripts/deploy.sh}
+      ACME_EMAIL: ${ACME_EMAIL:?not injected - deploy via scripts/deploy.sh}
+      DOMAIN: ${DOMAIN:?not injected - deploy via scripts/deploy.sh}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro,z
+      - caddy_data:/data          # certificates and ACME account - do not lose
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    networks:
+      - proxy
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
+
+networks:
+  proxy:
+    external: true

@@ -1,0 +1,27 @@
+# Real secrets never enter this repo.
+#
+# Every stack except infisical/ gets its values injected at deploy time by
+# `infisical run`, so a .env file should not exist for them at all. If one
+# shows up, it is a mistake — this rule catches it either way.
+.env
+*.env
+!*.env.example
+!.env.example
+
+# The one bootstrap credential that has to live on disk (Infisical machine
+# identity). Keep a copy in your password manager, never here.
+.infisical-identity
+*.identity
+
+# Decrypted or scratch artifacts
+*.decrypted
+*.bak
+*~
+
+# rclone
+rclone.conf
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

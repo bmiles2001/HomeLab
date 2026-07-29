@@ -1,0 +1,85 @@
+name: infisical
+
+# The one stack that does NOT get its secrets from Infisical, for obvious
+# reasons. It reads a plain .env in this directory, which is gitignored.
+# Keep a copy of that file in your password manager.
+#
+# Deploy (note: plain compose, not scripts/deploy.sh):
+#   cd stacks/infisical && docker compose up -d
+#
+# Verify against upstream before a major upgrade:
+#   https://infisical.com/docs/self-hosting/deployment-options/docker-compose
+
+services:
+  backend:
+    container_name: infisical_backend
+    image: infisical/infisical:${INFISICAL_VERSION:-latest-postgres}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      # 16-byte hex. Rotating this makes every stored secret unreadable.
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set in stacks/infisical/.env}
+      AUTH_SECRET: ${AUTH_SECRET:?set in stacks/infisical/.env}
+      DB_CONNECTION_URI: postgres://${DB_USER:?set in stacks/infisical/.env}:${DB_PASSWORD:?set in stacks/infisical/.env}@db:5432/${DB_NAME:-infisical}
+      REDIS_URL: redis://redis:6379
+      # Must match how you actually reach it, or OAuth callbacks and
+      # invite links point somewhere wrong.
+      SITE_URL: ${SITE_URL:?set in stacks/infisical/.env}
+    networks:
+      - default   # reaches db and redis
+      - proxy     # reachable by caddy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  db:
+    container_name: infisical_postgres
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:?set in stacks/infisical/.env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set in stacks/infisical/.env}
+      POSTGRES_DB: ${DB_NAME:-infisical}
+    volumes:
+      # Losing this loses every secret you have stored. It is backed up by
+      # scripts/infisical-backup.sh - set that timer up before you migrate
+      # anything real into Infisical.
+      - infisical_pgdata:/var/lib/postgresql/data
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-infisical} -d ${DB_NAME:-infisical}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    container_name: infisical_redis
+    image: docker.io/redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - infisical_redis:/data
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  infisical_pgdata:
+  infisical_redis:
+
+networks:
+  default:
+  proxy:
+    external: true

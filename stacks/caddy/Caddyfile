@@ -1,0 +1,82 @@
+# Routing table for the whole house. This file is the source of truth for
+# which hostname reaches which container - nothing else, nowhere else.
+#
+# Adding an app is three lines: copy the template block at the bottom, point
+# it at CONTAINER_NAME:PORT, make sure that container joins the `proxy`
+# network, then reload without dropping a connection:
+#
+#   docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+#
+# No new DNS record and no new certificate - the wildcard already covers it.
+
+{
+	email {env.ACME_EMAIL}
+
+	# Uncomment while testing routing so you don't burn Let's Encrypt rate
+	# limits. Certs will be untrusted; comment it out again once it works.
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# One wildcard cert covers every subdomain. Issued over DNS-01, which is why
+# it works for LAN-only names the public internet can never reach.
+(cf_tls) {
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+		resolvers 1.1.1.1 1.0.0.1
+	}
+}
+
+*.{env.DOMAIN} {
+	import cf_tls
+
+	# Refuse anything that isn't on the LAN. Uncomment once you've confirmed
+	# your subnet - cheap defence in depth, not a substitute for one.
+	# @notlocal not remote_ip 10.0.0.0/8 192.168.0.0/16 127.0.0.1/32
+	# abort @notlocal
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+
+	# --- photos.<domain> - Immich -----------------------------------------
+	# Resolved by Docker's embedded DNS on the `proxy` network. Container IPs
+	# change on restart and this keeps working, which is the whole point of the
+	# shared network over published ports.
+	#
+	# No request body limit is set: Caddy has none by default, which is what
+	# iPhone video uploads need. Do not add `request_body max_size` here.
+	@immich host photos.{env.DOMAIN}
+	handle @immich {
+		reverse_proxy immich_server:2283
+	}
+
+	# --- secrets.<domain> - Infisical --------------------------------------
+	@infisical host secrets.{env.DOMAIN}
+	handle @infisical {
+		reverse_proxy infisical_backend:8080
+	}
+
+	# --- cameras.<domain> - Frigate ----------------------------------------
+	# LAN-ONLY, permanently. When 443 is forwarded for Immich, this block must
+	# be behind the @notlocal guard above or removed entirely. A camera NVR is
+	# the last thing that should answer to the open internet.
+	@frigate host cameras.{env.DOMAIN}
+	handle @frigate {
+		reverse_proxy frigate:8971
+	}
+
+	# --- template: copy this block for each new app ------------------------
+	# @myapp host myapp.{env.DOMAIN}
+	# handle @myapp {
+	# 	reverse_proxy myapp_container:PORT
+	# }
+
+	# Anything not matched gets nothing, rather than an error page that
+	# advertises a proxy is sitting here.
+	handle {
+		abort
+	}
+}

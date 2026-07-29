@@ -1,0 +1,109 @@
+# Frigate configuration. This file is the source of truth.
+#
+# Frigate's web UI has a config editor that writes to this file. Using it makes
+# the running config diverge from git, which is exactly the failure mode
+# docs/decisions.md rules out for every other tool. Read in the UI, change here.
+#
+# Mounted read-only in compose.yml so the UI editor cannot save over it. If you
+# want to try something quickly, edit here and redeploy - it takes ten seconds.
+
+mqtt:
+  enabled: false        # turn on when Home Assistant arrives
+
+# --- detection --------------------------------------------------------------
+# OpenVINO on the Intel UHD 770. Chosen over the RTX 3080 deliberately:
+# detection runs 24/7 while Immich's ML is bursty, and keeping them on separate
+# GPUs means neither can starve the other or make the other hard to debug.
+#
+# Frigate's capacity formula is roughly:
+#     cameras ≈ (1000 / inference_speed_ms) / detect_fps
+# Watch the actual inference time on the System page. If it climbs past ~25ms
+# or you add cameras beyond what the formula allows, move detection to the 3080
+# (see docs/frigate.md) rather than lowering detect fps.
+detectors:
+  ov:
+    type: openvino
+    device: GPU
+
+model:
+  width: 300
+  height: 300
+  input_tensor: nhwc
+  input_pixel_format: bgr
+  path: /openvino-model/ssdlite_mobilenet_v2.xml
+  labelmap_path: /openvino-model/coco_91cl_bkgr.txt
+
+# --- decoding ---------------------------------------------------------------
+# QuickSync on the same iGPU. Decoding several 24/7 streams in software is the
+# difference between an idle CPU and a permanently busy one.
+ffmpeg:
+  hwaccel_args: preset-vaapi
+
+# --- defaults applied to every camera ---------------------------------------
+detect:
+  enabled: true
+  fps: 5                # 5 is plenty; higher costs inference budget for nothing
+
+objects:
+  track:
+    - person
+    - car
+    - dog
+    - cat
+
+record:
+  enabled: true
+  retain:
+    days: 7             # continuous footage
+    mode: motion        # only keep segments with motion; huge saving
+  alerts:
+    retain:
+      days: 30          # clips where a tracked object appeared
+  detections:
+    retain:
+      days: 30
+
+snapshots:
+  enabled: true
+  retain:
+    default: 30
+
+# --- cameras ----------------------------------------------------------------
+# Template. Replace with your real cameras. Two streams per camera is the
+# standard pattern: the low-res substream feeds detection, the high-res main
+# stream is what gets recorded. Pointing detection at a 4K stream is the most
+# common way to make Frigate slow.
+#
+# Find your camera's RTSP URLs at https://docs.frigate.video/configuration/camera_specific
+#
+# go2rtc restreams so each camera is connected to exactly once, no matter how
+# many things want the feed.
+
+go2rtc:
+  streams:
+    front_door:
+      - rtsp://viewer:{FRIGATE_RTSP_PASSWORD}@10.0.0.51:554/stream1
+    front_door_sub:
+      - rtsp://viewer:{FRIGATE_RTSP_PASSWORD}@10.0.0.51:554/stream2
+
+cameras:
+  front_door:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/front_door_sub
+          input_args: preset-rtsp-restream
+          roles: [detect]
+        - path: rtsp://127.0.0.1:8554/front_door
+          input_args: preset-rtsp-restream
+          roles: [record]
+    detect:
+      width: 640
+      height: 480
+    # Draw these in the UI, then paste the coordinates back here. Without
+    # zones, a camera facing the street will alert on every passing car.
+    # zones:
+    #   driveway:
+    #     coordinates: 0,0,0,0,0,0
+
+version: 0.17

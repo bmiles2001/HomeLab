@@ -1,0 +1,65 @@
+name: frigate
+
+# NVR for the house cameras.
+#
+# Deploy:  ./scripts/deploy.sh frigate
+#
+# Two rules specific to this stack:
+#
+#   1. It is LAN-only, permanently. Do not put it behind a public hostname.
+#   2. Frigate's own config lives in ./config.yml, in git. The web UI can edit
+#      that file, which would make the running config diverge from this repo.
+#      Use the UI to *read*; make changes here and redeploy. Same rule as
+#      Portainer's editor - see docs/decisions.md.
+
+services:
+  frigate:
+    container_name: frigate
+    image: ghcr.io/blakeblackshear/frigate:${FRIGATE_VERSION:-0.17.2}
+    restart: unless-stopped
+
+    # Frigate passes decoded frames between processes through /dev/shm. The
+    # 64MB Docker default causes "Bus error" crashes once you have more than a
+    # couple of cameras. Frigate's docs give a per-camera formula; 512MB is a
+    # safe starting point for a handful of cameras and costs nothing until used.
+    shm_size: "512mb"
+
+    devices:
+      # Intel UHD 770 - hardware decode of the camera streams via QuickSync,
+      # and object detection via OpenVINO. This is the workhorse: decoding
+      # several 24/7 H.264/H.265 streams in software will eat most of a CPU.
+      - /dev/dri/renderD128:/dev/dri/renderD128
+
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./config.yml:/config/config.yml:ro
+      - ${FRIGATE_MEDIA:-/srv/frigate/media}:/media/frigate
+      # Frigate writes recording segments here before moving them to /media.
+      # tmpfs keeps that churn off the NVMe entirely.
+      - type: tmpfs
+        target: /tmp/cache
+        tmpfs:
+          size: 1000000000
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+      # Referenced as {FRIGATE_RTSP_PASSWORD} inside config.yml, so camera
+      # credentials never enter git. Injected by scripts/deploy.sh.
+      FRIGATE_RTSP_PASSWORD: ${FRIGATE_RTSP_PASSWORD:?not injected - deploy via scripts/deploy.sh}
+
+    networks:
+      - proxy      # reached by caddy at frigate:8971
+
+    # No published ports. Frigate's docs show 5000/8971/8554 published to the
+    # host; that is for people without a reverse proxy. 8971 is the
+    # authenticated UI and Caddy reaches it over `proxy`. Port 5000 is the
+    # UNAUTHENTICATED admin port - never publish it.
+    #
+    # The exception is go2rtc's RTSP restream on 8554, if you later want other
+    # apps pulling streams. Bind it to the LAN deliberately when that day comes:
+    #   ports:
+    #     - "10.0.0.4:8554:8554"
+
+networks:
+  proxy:
+    external: true

@@ -1,0 +1,18 @@
+[Unit]
+Description=Mirror Immich library to OneDrive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/immich-onedrive-sync.sh
+# rclone's config lives under the invoking user's home. If you ran
+# `rclone config` as root, this is correct as-is.
+Environment=HOME=/root
+User=root
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=6h
+
+[Install]
+WantedBy=multi-user.target

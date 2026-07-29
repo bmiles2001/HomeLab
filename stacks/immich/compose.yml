@@ -1,0 +1,103 @@
+name: immich
+
+# IMPORTANT: Immich's compose file changes between releases. Before a major
+# upgrade, diff this against the official one for the version you're pinning:
+#   https://github.com/immich-app/immich/releases/latest/download/docker-compose.yml
+#
+# Deploy:  ./scripts/deploy.sh immich
+#
+# Two deliberate differences from upstream:
+#   1. No published ports. Caddy reaches immich-server over the `proxy`
+#      network by name, so nothing here listens on the LAN.
+#   2. env_file replaced with explicit `environment:` blocks, because secrets
+#      arrive as injected environment variables rather than a file on disk.
+
+services:
+  immich-server:
+    container_name: immich_server
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
+    restart: unless-stopped
+    volumes:
+      # A real path on the NVMe. Bind mount rather than a named volume
+      # because scripts/immich-onedrive-sync.sh reads it directly.
+      - ${UPLOAD_LOCATION:-/srv/immich/data}:/data
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      DB_HOSTNAME: ${DB_HOSTNAME:-database}
+      DB_USERNAME: ${DB_USERNAME:?not injected - deploy via scripts/deploy.sh}
+      DB_PASSWORD: ${DB_PASSWORD:?not injected - deploy via scripts/deploy.sh}
+      DB_DATABASE_NAME: ${DB_DATABASE_NAME:-immich}
+      REDIS_HOSTNAME: ${REDIS_HOSTNAME:-redis}
+      TZ: ${TZ:-America/Chicago}
+    depends_on:
+      - redis
+      - database
+    networks:
+      - default   # reaches postgres and redis
+      - proxy     # reachable by caddy
+    healthcheck:
+      disable: false
+
+  immich-machine-learning:
+    container_name: immich_machine_learning
+    image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-release}-cuda
+    restart: unless-stopped
+    volumes:
+      - model-cache:/cache
+    environment:
+      TZ: ${TZ:-America/Chicago}
+    networks:
+      - default
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      disable: false
+
+  redis:
+    container_name: immich_redis
+    image: docker.io/valkey/valkey:9-bookworm
+    restart: unless-stopped
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  database:
+    container_name: immich_postgres
+    # Immich's own Postgres build with the VectorChord extension baked in.
+    # Do not substitute a stock postgres image - it will not start.
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:?not injected - deploy via scripts/deploy.sh}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?not injected - deploy via scripts/deploy.sh}
+      POSTGRES_DB: ${DB_DATABASE_NAME:-immich}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      # A named volume rather than a bind mount, on purpose: it lives on the
+      # machine's ext4 disk with correct ownership, and it is impossible to
+      # accidentally point at C:/ later. Recovery is via pg_dump, not by
+      # copying this directory.
+      - pgdata:/var/lib/postgresql/data
+    shm_size: 128mb
+    networks:
+      - default
+    healthcheck:
+      disable: false
+
+volumes:
+  model-cache:
+  pgdata:
+
+networks:
+  default:
+  proxy:
+    external: true
