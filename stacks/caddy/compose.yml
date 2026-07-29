@@ -16,7 +16,12 @@ services:
     container_name: caddy
     # Stock Caddy has no DNS providers compiled in. This is the standard
     # prebuilt image with the Cloudflare DNS module included.
-    image: ghcr.io/caddybuilds/caddy-cloudflare:${CADDY_VERSION:-2.10}
+    # Must be a build dated after 2026-03-23. Cloudflare switched to prefixed
+    # "scannable" API tokens (cfut_ user, cfat_ account) with no announcement,
+    # and caddy-dns/cloudflare rejected the new shape in a local regex before
+    # ever calling the API - caddy-dns/cloudflare#123. The 2.10 images predate
+    # the fix and fail at startup with "API token appears invalid".
+    image: ghcr.io/caddybuilds/caddy-cloudflare:${CADDY_VERSION:-2.11}
     restart: unless-stopped
     ports:
       - "80:80"
