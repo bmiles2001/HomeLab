@@ -29,6 +29,9 @@ services:
       DB_DATABASE_NAME: ${DB_DATABASE_NAME:-immich}
       REDIS_HOSTNAME: ${REDIS_HOSTNAME:-redis}
       TZ: ${TZ:-America/Chicago}
+      # Defaults to true so a fresh install can create its first admin. Flip it
+      # to false in Infisical right after you register - see docs/immich-deploy.md.
+      IMMICH_ALLOW_SETUP: ${IMMICH_ALLOW_SETUP:-true}
     depends_on:
       - redis
       - database

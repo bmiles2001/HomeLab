@@ -47,9 +47,14 @@ $EDITOR .env
 docker compose up -d
 ```
 
-Reach it at `https://secrets.brent-miles.com` once Caddy is up, or
-`http://localhost:8080` before that. Create the admin account immediately —
-the first person to hit a fresh Infisical becomes the admin.
+Reach it at `https://secrets.brent-miles.com` — **only** once Caddy is up.
+Infisical publishes no host ports (only Caddy does), so there is no
+`http://localhost:8080` to fall back on. If you need the UI before Caddy
+exists, publish `127.0.0.1:8080:8080` on the `backend` service temporarily and
+remove it again afterwards; otherwise use the CLI.
+
+Create the admin account immediately — the first person to hit a fresh
+Infisical becomes the admin.
 
 ### 2. Create a project and folders
 

@@ -21,6 +21,7 @@ scripts/
   immich-onedrive-*   one-way mirror of the photo library to OneDrive
 docs/
   forge-session-runbook.md   build order: hardening, docker, first stacks
+  immich-deploy.md           step-by-step: secrets, deploy, first login, iPhones
   photo-app-comparison.md    why Immich and not the others
   frigate.md                 GPU split, storage budget, why it stays off the internet
   secrets.md                 Infisical setup and the daily workflow
