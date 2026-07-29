@@ -13,7 +13,14 @@ name: infisical
 services:
   backend:
     container_name: infisical_backend
-    image: infisical/infisical:${INFISICAL_VERSION:-latest-postgres}
+    # Do NOT use the `latest-postgres` tag. It looks like a moving tag but was
+    # frozen on 2025-08-08 - a leftover from the Mongo->Postgres migration.
+    # Running it against a current CLI fails with:
+    #   Route GET:/api/v4/secrets ... not found
+    # because that build predates the v4 API. The maintained tags are plain
+    # `latest` and `vX.Y.Z`. Check before bumping:
+    #   https://hub.docker.com/r/infisical/infisical/tags
+    image: infisical/infisical:${INFISICAL_VERSION:-v0.160.9}
     restart: unless-stopped
     depends_on:
       db:

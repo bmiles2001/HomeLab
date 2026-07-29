@@ -23,6 +23,16 @@ an unreadable blob.
 That's the entire bootstrap chain: one file on the host, one copy in 1Password
 or Bitwarden. Everything else derives from it.
 
+## Version pinning — read before you bump
+
+The server and the CLI have to be roughly contemporaries. The CLI talks to
+`/api/v4/secrets`; a server older than that route answers `404 Route ... not
+found`, which reads like a project or permissions problem and is neither.
+
+**Never use the `latest-postgres` tag.** It was frozen 2025-08-08 and is a
+relic of the Mongo→Postgres migration. `compose.yml` pins an explicit `vX.Y.Z`;
+check <https://hub.docker.com/r/infisical/infisical/tags> before changing it.
+
 ## Setup, once
 
 ### 1. Bring up Infisical
@@ -67,13 +77,15 @@ The host authenticates as a machine, not as you. In the Infisical UI:
 **Organization Access Control → Identities → Create identity**, Universal
 Auth, then grant it read access to the project.
 
-Store the resulting client ID and secret on the host:
+Store the resulting client ID and secret on the host, along with the project ID
+from **Project → Settings → General → Project ID**:
 
 ```bash
 umask 077
 cat > ~/.infisical-identity <<'EOF'
 export INFISICAL_UNIVERSAL_AUTH_CLIENT_ID=...
 export INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=...
+export INFISICAL_PROJECT_ID=...
 EOF
 echo 'source ~/.infisical-identity' >> ~/.bashrc
 ```
@@ -81,10 +93,16 @@ echo 'source ~/.infisical-identity' >> ~/.bashrc
 That file is `chmod 600` and outside the repo. It's the one local secret worth
 protecting properly — treat it like an SSH private key.
 
+The project ID isn't a secret, but it belongs here so `deploy.sh` can run from
+any directory. `deploy.sh` passes it as `--projectId` rather than relying on an
+`infisical init`-generated `.infisical.json`, because the script `cd`s into the
+stack directory and cwd-based project discovery is one more thing that can drift
+without saying so.
+
 Confirm it works:
 
 ```bash
-infisical secrets --env=prod --path=/caddy
+infisical secrets --projectId="$INFISICAL_PROJECT_ID" --env=prod --path=/caddy
 ```
 
 ## Daily use

@@ -53,6 +53,15 @@ command -v infisical >/dev/null || {
   exit 1
 }
 
+# The CLI needs to know which project to read. Passed explicitly rather than
+# relying on a .infisical.json, because we cd into the stack directory below
+# and cwd-based project discovery is one more thing that can silently drift.
+if [[ -z "${INFISICAL_PROJECT_ID:-}" ]]; then
+  echo "ERROR: INFISICAL_PROJECT_ID is not set." >&2
+  echo "Add it to ~/.infisical-identity - see docs/secrets.md" >&2
+  exit 1
+fi
+
 # Guard rail: a .env here means someone fell back to the old workflow and the
 # repo has quietly stopped being the source of truth. Fail loudly.
 if [[ -f "$STACK_DIR/.env" ]]; then
@@ -65,11 +74,13 @@ cd "$STACK_DIR"
 
 if $DRY_RUN; then
   echo "--- resolved config for '$STACK' (secrets redacted by compose) ---"
-  exec infisical run --env="$INFISICAL_ENV" --path="/$STACK" -- docker compose config
+  exec infisical run --projectId="$INFISICAL_PROJECT_ID" \
+    --env="$INFISICAL_ENV" --path="/$STACK" -- docker compose config
 fi
 
 echo "deploying '$STACK' with secrets from infisical:$INFISICAL_ENV/$STACK"
-infisical run --env="$INFISICAL_ENV" --path="/$STACK" -- \
+infisical run --projectId="$INFISICAL_PROJECT_ID" \
+  --env="$INFISICAL_ENV" --path="/$STACK" -- \
   docker compose up -d --remove-orphans "$@"
 
 echo
