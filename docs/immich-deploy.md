@@ -176,8 +176,14 @@ or two. You want `Immich Server is listening on ... [v3.0.3]`.
   `docker logs immich_machine_learning` for `libnvidia-ml.so.1`, which means
   the driver isn't visible. The server works fine without ML; face detection
   and smart search just don't run. Not a reason to stop.
-- **`redis` fails to pull** — the repo pins `valkey/valkey:9-bookworm` where
-  upstream uses `valkey/valkey:9`. If the tag has gone away, use `valkey:9`.
+- **`failed to resolve reference docker.io/valkey/valkey:9-bookworm`** — hit and
+  fixed on 2026-07-29. That tag never existed; the file had invented it by
+  analogy with the `redis:7-bookworm` naming. Now pinned to `valkey:9`, matching
+  upstream. If you see this, you're on a stale commit — `git pull`.
+  Note the failure mode: compose reported `[+] up 4/4` and `Interrupted` against
+  the three images that *were* fine, because one unresolvable reference aborts
+  the whole pull. The broken line is the one marked with a red `✗`, not the
+  interrupted ones.
 - **`bootstrap.sh` warns about stray published ports** — something other than
   Caddy is publishing. Fix it; that's the one architectural rule this whole
   setup rests on.

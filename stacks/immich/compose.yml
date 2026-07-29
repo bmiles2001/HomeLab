@@ -63,7 +63,10 @@ services:
 
   redis:
     container_name: immich_redis
-    image: docker.io/valkey/valkey:9-bookworm
+    # Upstream pins `valkey:9`. There is no `9-bookworm` tag - an earlier draft
+    # of this file invented one by analogy with the redis images, and the pull
+    # fails with "not found". Match upstream and leave it alone.
+    image: docker.io/valkey/valkey:9
     restart: unless-stopped
     networks:
       - default

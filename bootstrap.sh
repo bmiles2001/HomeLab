@@ -107,8 +107,3 @@ fi
                              || warn "/dev/dri/renderD128 missing - no iGPU transcoding"
 
 echo
-echo "next: infisical first (it has no dependencies), then caddy, then apps."
-echo "  cd stacks/infisical && cp .env.example .env && \$EDITOR .env && docker compose up -d"
-echo "  ./scripts/deploy.sh caddy"
-echo "  ./scripts/deploy.sh immich"
-echo
