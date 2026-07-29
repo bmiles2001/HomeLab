@@ -83,5 +83,11 @@ infisical run --projectId="$INFISICAL_PROJECT_ID" \
   --env="$INFISICAL_ENV" --path="/$STACK" -- \
   docker compose up -d --remove-orphans "$@"
 
+# `docker compose ps` parses compose.yml and therefore needs the same injected
+# variables the deploy did - it is not a plain container query. Run it outside
+# `infisical run` and it dies on `required variable DOMAIN is missing`, after a
+# deploy that already succeeded, and takes the script's exit code with it.
 echo
-docker compose ps
+infisical run --projectId="$INFISICAL_PROJECT_ID" \
+  --env="$INFISICAL_ENV" --path="/$STACK" -- \
+  docker compose ps
