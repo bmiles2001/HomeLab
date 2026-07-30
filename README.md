@@ -22,6 +22,7 @@ scripts/
 docs/
   forge-session-runbook.md   build order: hardening, docker, first stacks
   immich-deploy.md           step-by-step: secrets, deploy, first login, iPhones
+  onedrive-mirror.md         rclone setup, the headless auth dance, restoring
   photo-app-comparison.md    why Immich and not the others
   frigate.md                 GPU split, storage budget, why it stays off the internet
   secrets.md                 Infisical setup and the daily workflow
@@ -144,24 +145,39 @@ queue up and upload when you get back on wifi.
 
 ### The OneDrive mirror
 
-A **one-way push**, not a sync. Immich is the source of truth; OneDrive is a
-copy. Editing or deleting a file in OneDrive does nothing to Immich and gets
-undone on the next run. Deletions in Immich move the OneDrive copy into a
-dated `Immich-deleted/` folder rather than erasing it.
+A **one-way push**, not a two-way sync. Immich is the source of truth; OneDrive
+is a copy. Editing or deleting a file in OneDrive does nothing to Immich and gets
+undone on the next run.
+
+It *is* a mirror in the other direction: deleting a photo in Immich eventually
+removes it from OneDrive too, which is what makes pruning reclaim offsite space.
+That takes about 90 days through four holding areas, and the last one is
+OneDrive's own recycle bin, which rclone cannot empty and which still counts
+against your quota. The chain is worth understanding once —
+[docs/onedrive-mirror.md](docs/onedrive-mirror.md#what-actually-happens-when-you-delete-a-photo).
 
 Skipped: `thumbs/` and `encoded-video/` — both regenerate from originals, and
 syncing them can double your OneDrive usage for zero recovery value.
 
-Install:
+Target is M365 Personal/Family, so **1TB is a hard ceiling** shared with
+everything else in that account. The script logs both sides' sizes every run and
+warns at 85%.
+
+Full setup — including the headless OAuth dance, and the OneDrive desktop client
+trap that will otherwise pull the whole library onto your PC — is in
+[docs/onedrive-mirror.md](docs/onedrive-mirror.md). Short version, once rclone is
+configured as **root**:
 
 ```bash
 sudo install -m 755 scripts/immich-onedrive-sync.sh /usr/local/bin/
+sudo /usr/local/bin/immich-onedrive-sync.sh --dry-run   # always first
 sudo cp scripts/immich-onedrive-sync.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now immich-onedrive-sync.timer
 ```
 
-Dry run first, always: `sudo /usr/local/bin/immich-onedrive-sync.sh --dry-run`
+Do the first full run by hand in `tmux`, not via the timer — the unit times out
+at 6h and an initial upload can exceed that.
 
 **Restoring.** The OneDrive copy gives you back your *files*, not your
 *library* — albums, faces and shared links live in Postgres. A real restore is:
@@ -180,7 +196,14 @@ when you need it.
 | Immich Postgres             | `pgdata` volume             | dump inside the OneDrive mirror |
 | Photos                      | `/srv/immich/data`          | OneDrive mirror             |
 | Caddy certs + ACME account  | `caddy_data` volume         | nothing - reissued on demand |
+| **rclone OneDrive token**   | `/root/.config/rclone/`     | **nothing** - re-auth on demand |
 | Everything else             | this repo                   | GitHub                      |
+
+Two things that table doesn't say out loud. The Infisical row and the rclone row
+are both *credentials protecting the backups*, so losing the boot drive costs
+you the ability to reach your offsite copy until you re-authenticate — annoying,
+not fatal, and only because `ENCRYPTION_KEY` is in your password manager. And
+every row except Infisical's is untested until you've actually restored from it.
 
 There is no longer a "the whole machine is one file" escape hatch — that was a
 WSL convenience and it went away with WSL. The replacement is a real backup
@@ -195,6 +218,12 @@ discipline: the table above, plus the OS itself being reproducible from
 thumbnails and transcodes, so plan on roughly 1.3–1.5× your raw library size.
 It's now a plain ext4 filesystem — what `df` says is what you have, with no
 virtual disk that grows and never shrinks.
+
+**The binding constraint is OneDrive, not the NVMe.** The mirror caps out at
+1TB, and derived data is excluded from it, so the number to watch is the size of
+`library/` — not total disk use. The 2TB local disk will outlast the offsite
+copy by a wide margin; see
+[docs/onedrive-mirror.md](docs/onedrive-mirror.md#when-1tb-isnt-enough).
 
 Immich's machine learning wants 6–8GB RAM. With 32GB in the box that's a
 non-issue, and the RTX 3080 makes the `-cuda` ML image worth switching to once
@@ -213,8 +242,11 @@ Watch it with `du -sh /srv/immich/data/*` occasionally.
   alternative — public 443 for Immich, Tailscale for everything that should
   never be public.
 - **Komodo**, for git-push→deploy. Ruled out under Podman-on-WSL because its
-  agent needs a real Docker socket; that objection died with the pivot. Adopt
-  it after Immich works, so its first stack is one you already trust.
-- **Backups.** The photo library will exist in exactly one place on one NVMe
-  until the OneDrive mirror runs. Largest unmitigated risk in the build.
+  agent needs a real Docker socket; that objection died with the pivot. Immich
+  now works, so the stated precondition is met.
+- **A verified restore.** The mirror running is not the same as the mirror
+  working. Until a database dump has been loaded into a throwaway Immich and an
+  album confirmed present, the backup is a hypothesis — see
+  [docs/onedrive-mirror.md](docs/onedrive-mirror.md) §8. Do it while the library
+  is small.
 - **A family dashboard.** Homepage, when there are enough apps to warrant it.
