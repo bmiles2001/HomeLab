@@ -3,10 +3,18 @@
 Everything needed to get `photos.brent-miles.com` serving, LAN-only, from
 whatever state `forge` is in right now. Written 2026-07-29.
 
-Verified against upstream today: **v3.0.3 is current** (released 2026-07-14),
-and the `postgres:14-vectorchord0.4.3-pgvectors0.2.0` tag in
-`stacks/immich/compose.yml` matches the tag in upstream's v3 compose file
-exactly. The pin is good; don't move it.
+Pinned to **v3.1.0**, released 2026-07-29. Verified against upstream's compose
+file for that exact tag: the `postgres:14-vectorchord0.4.3-pgvectors0.2.0` and
+`valkey:9` pins in `stacks/immich/compose.yml` match it, and nothing structural
+changed between v3.0.3 and v3.1.0. Version bumps in this stack are a secret
+change plus a redeploy — see the last section.
+
+Two things in v3.1.0 that touch this setup:
+
+- The only breaking change is **the mobile app dropping iOS 14**. Check
+  everyone's phone is on iOS 15+ before you install it for them.
+- The new web upload wakelock **requires HTTPS**, which you have. It would
+  silently not work on a plain-HTTP setup.
 
 The OneDrive mirror is deliberately out of scope. Stop at step 7.
 
@@ -62,7 +70,7 @@ infisical secrets set --projectId="$INFISICAL_PROJECT_ID" --env=prod --path=/imm
   DB_PASSWORD="$DB_PW" \
   DB_USERNAME=postgres \
   DB_DATABASE_NAME=immich \
-  IMMICH_VERSION=v3.0.3 \
+  IMMICH_VERSION=v3.1.0 \
   TZ=America/Chicago
 ```
 
@@ -163,7 +171,7 @@ docker logs -f immich_server
 ```
 
 First start runs schema migrations against an empty database and takes a minute
-or two. You want `Immich Server is listening on ... [v3.0.3]`.
+or two. You want `Immich Server is listening on ... [v3.1.0]`.
 
 ### If something doesn't come up
 
@@ -286,6 +294,42 @@ anything on the host directly to make it work, that's rule one broken — put it
 in the repo before you close the terminal.
 
 ---
+
+## Bumping the version, later
+
+`IMMICH_VERSION` lives in Infisical, not in a file, so a version bump is two
+commands and no commit:
+
+```bash
+infisical secrets set --projectId="$INFISICAL_PROJECT_ID" --env=prod --path=/immich \
+  IMMICH_VERSION=vX.Y.Z
+./scripts/deploy.sh immich
+```
+
+Compose pulls the new tag, recreates `immich-server` and
+`immich-machine-learning`, and leaves Postgres and Redis alone. Migrations run
+on startup — `docker logs -f immich_server`.
+
+Before any bump that isn't a patch:
+
+1. **Read the release notes for breaking changes.** Immich puts them under a
+   `🚨 Breaking Changes` heading. v3.0.0 dropped `pgvecto.rs` and changed
+   duration units; that's the kind of thing that ruins an evening.
+2. **Diff the upstream compose file for the tag you're moving to.** Not `main` —
+   upstream says explicitly that `main` may not match the release:
+   `https://raw.githubusercontent.com/immich-app/immich/vX.Y.Z/docker/docker-compose.yml`.
+   You're looking for changed image pins on `database` and `redis`, and for new
+   required variables.
+3. **Take a database dump first**, once you have a library worth keeping.
+
+Don't use GitHub's `/releases/latest` to check what's current — it currently
+resolves to `v2.7.5`, an older channel, which will quietly talk you out of an
+upgrade you should be doing. Read the
+[releases list](https://github.com/immich-app/immich/releases) instead.
+
+Also note `IMMICH_VERSION` applies to **both** the server and the ML image
+(`:${IMMICH_VERSION}-cuda`), so they can never drift apart. That's deliberate;
+Immich doesn't support running them at different versions.
 
 ## What's now due
 

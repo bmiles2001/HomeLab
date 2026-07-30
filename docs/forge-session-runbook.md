@@ -369,7 +369,9 @@ Caddy first, because Immich needs somewhere to be proxied from.
 
 Immich:
 
-- Pin an explicit version tag — `v3.0.3` as of today. Never `:latest`
+- Pin an explicit version tag — `v3.1.0` as of 2026-07-29. Never `:latest`.
+  The pin lives in Infisical under `/immich`; see
+  [immich-deploy.md](immich-deploy.md) for the bump procedure
 - `UPLOAD_LOCATION=/srv/immich/data`
 - Postgres and Redis stay on the stack's private network; **only** `immich-server`
   joins `proxy`

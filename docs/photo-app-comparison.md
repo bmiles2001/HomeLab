@@ -16,7 +16,7 @@ Requirement 1 is the one that eliminates most of the field.
 ## The short version
 
 **Immich.** It's the only option that satisfies every hard requirement without a
-third-party app bolted on. Latest stable is v3.0.3 (2026-07-09), on top of the
+third-party app bolted on. Latest stable is v3.1.0 (2026-07-29), on top of the
 v3.0.0 release from 2026-07-01. The project left the "expect breaking changes"
 era behind with its first stable release in October 2025.
 
