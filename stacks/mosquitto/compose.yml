@@ -53,11 +53,21 @@ services:
     # Only the two writable paths are chowned. /mosquitto/config/mosquitto.conf
     # is a read-only bind mount, so a recursive chown over the directory fails
     # and takes the whole chain down with it.
+    #
+    # The `rm -f` is not tidiness, it is required. Despite what the flag reads
+    # like, `mosquitto_passwd -c` does NOT overwrite - mosquitto 2.x opens the
+    # file O_EXCL and fails with "Unable to open file ... for writing. File
+    # exists." That makes the whole entrypoint a one-shot: it works on a fresh
+    # volume, then fails forever after, because the password file it wrote the
+    # first time outlives every container. Deleting first makes it idempotent
+    # and means the file always reflects what is currently in Infisical rather
+    # than whatever was there when the volume was created.
     entrypoint:
       - /bin/sh
       - -c
       - |
         set -e
+        rm -f /mosquitto/config/passwd
         mosquitto_passwd -c -b /mosquitto/config/passwd "$$MQTT_USER" "$$MQTT_PASSWORD"
         chown mosquitto:mosquitto /mosquitto/config/passwd /mosquitto/data
         exec mosquitto -c /mosquitto/config/mosquitto.conf

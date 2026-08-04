@@ -176,6 +176,33 @@ SQLite database does not appreciate being copied mid-write.
 
 ---
 
+## When mosquitto restart-loops
+
+The broker generates its password file at startup from the injected secrets,
+which means a failure there kills the container before MQTT ever listens. The
+symptom is `Restarting (1)` in `docker ps` and Frigate and Home Assistant both
+sitting quiet, because both retry a missing broker forever rather than failing.
+
+```bash
+docker logs mosquitto --tail 20
+```
+
+| Log says | Cause |
+|---|---|
+| `Unable to open file /mosquitto/config/passwd for writing. File exists.` | `mosquitto_passwd -c` opens O_EXCL and will not overwrite. The entrypoint deletes the file first for exactly this reason — if you see this, that `rm -f` is missing. |
+| `Permission denied` on the same path | Running as the `mosquitto` user rather than root. `user: root` in compose.yml fixes it; the broker still drops privileges itself via `user mosquitto` in mosquitto.conf. |
+| `Unable to open pwfile` | The file exists but the broker can't read it after dropping privileges — the `chown` line didn't run. |
+| Nothing, container exits 0 | Wrong config path in the `exec` line. |
+
+Note that recreating the container does **not** clear the password file — it
+lives in the `mosquitto_config` volume and outlives containers. To start
+genuinely clean:
+
+```bash
+docker compose -f stacks/mosquitto/compose.yml down -v
+./scripts/deploy.sh mosquitto
+```
+
 ## Rotating the MQTT password
 
 One credential, stored in three places, because `deploy.sh` scopes each stack to
