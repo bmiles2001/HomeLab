@@ -364,6 +364,15 @@ See [unifi.md](unifi.md).
 - **An offsite copy of UniFi's `.unf` backups.** Same shape as the HA problem:
   `/srv/unifi/config/data/backup` is the only thing that can rebuild the
   controller, and it exists on one disk. See [unifi.md](unifi.md#backups).
+- **UniFi's MongoDB is pinned back to 7.0, and shouldn't stay there.** MongoDB
+  8.0+ refuses to start on Linux kernels 6.19 through 7.0.13 — a bundled
+  TCMalloc depending on rseq behaviour the kernel stopped providing. 7.0 is
+  unaffected and is a supported UniFi database, so it works, but it is an
+  older major sitting on a shorter support window for a reason that has
+  nothing to do with this repo. Kernel 7.0.14+ resolves it; the exit is a
+  kernel upgrade on forge and then the documented Mongo major-upgrade dance.
+  Care needed because the NVIDIA driver rebuilds via DKMS and Frigate depends
+  on it. See [unifi.md](unifi.md#mongodb-will-not-start-on-this-kernel).
 - **Immich transcoding on the now-idle iGPU.** Free performance, unclaimed.
 - **Backups.** The photo library will exist in exactly one place on one NVMe.
   `rclone` to OneDrive is the intended answer; until it runs, this is the

@@ -29,14 +29,19 @@ a second controller.
 
 Two containers.
 
-| Container  | What it is                                        |
-| ---------- | ------------------------------------------------- |
-| `unifi`    | the application. Java. Web UI on 8443.            |
-| `unifi-db` | MongoDB 8.0. Required, external, and not optional. |
+| Container  | What it is                                         |
+| ---------- | -------------------------------------------------- |
+| `unifi`    | the application. Java. Web UI on 8443.             |
+| `unifi-db` | MongoDB 7.0. Required, external, and not optional. |
 
 The application has no embedded database. This is the single biggest difference
 from the old `unifi-controller` image, and it is why a migration from one to the
 other is a backup-and-restore rather than a version bump.
+
+**MongoDB is pinned to 7.0, not 8.0, and that is deliberate** — see
+[MongoDB will not start on this kernel](#mongodb-will-not-start-on-this-kernel)
+below. It is a supported combination, but it is a workaround with an exit
+condition, not the intended end state.
 
 ---
 
@@ -223,12 +228,74 @@ a newer major, and performs no automatic upgrade, so changing `MONGO_VERSION`
 and redeploying gives a database container in a restart loop and a controller
 that cannot authenticate.
 
-The supported path here is: take a full UniFi backup, stop the stack, delete the
-`unifi_unifi_db` volume, change the pin, deploy fresh, restore from the backup.
-Slower than an upgrade and much harder to get wrong.
+The supported path is: take a full UniFi backup from the UI, stop the stack,
+delete the `unifi_unifi_db` volume, change the pin, deploy fresh, restore from
+the backup. Slower than an upgrade and much harder to get wrong.
 
-Current constraint: UniFi 9.0+ supports MongoDB 8.0. Earlier 8.1+ releases
-supported 3.6 through 7.0 only.
+```bash
+# after taking a backup from Settings > System > Backups
+cd stacks/unifi && docker compose down
+docker volume rm unifi_unifi_db
+# change MONGO_VERSION in compose.yml
+cd ../.. && ./scripts/deploy.sh unifi
+# then restore the .unf through the setup wizard
+```
+
+Version constraints, both of which have to hold at once:
+
+- **UniFi**: 8.1+ supports MongoDB 3.6–7.0. 9.0+ adds 8.0.
+- **This box**: MongoDB 8.0+ will not start until forge is on kernel 7.0.14 or
+  later. See below.
+
+---
+
+## MongoDB will not start on this kernel
+
+The reason `MONGO_VERSION` is pinned to `7.0` rather than `8.0`.
+
+```
+"msg":"MongoDB cannot start: Linux kernel versions 6.19 and newer has a
+       known incompatibility with this version of MongoDB"
+```
+
+MongoDB 8.0 switched its bundled TCMalloc allocator to a per-CPU cache built on
+the kernel's restartable-sequences (rseq) feature. TCMalloc relied on the kernel
+writing `cpu_id_start` on reschedule — real behaviour, but never part of the
+documented rseq ABI. Linux 6.19 rewrote rseq for performance and stopped doing
+it. TCMalloc has not been fixed, so MongoDB ships a kernel version check and
+refuses to start rather than segfault every thirty seconds.
+
+Affected kernels are **6.19 through 7.0.13**. Kernel **7.0.14 and later** fixes
+it, per MongoDB's own production notes.
+
+Two things worth knowing, because both waste time:
+
+- **The `GLIBC_TUNABLES=glibc.pthread.rseq=1` workaround in forum threads does
+  not apply here.** That trick makes glibc claim rseq first so TCMalloc falls
+  back to a per-thread cache, and it was written for the era when this
+  presented as a crash. What we get is a version check that fires before any
+  allocation happens. The process never reaches the code the tunable affects.
+- **Rolling forward does not escape it.** 8.2 vendors the same TCMalloc. The
+  only versions that work are 7.0 and below, or a specific old patch release
+  (8.0.4) that predates the check — which is not something to build on.
+
+**MongoDB 7.0 is not affected** and is a supported UniFi database, so that is
+the pin until the kernel moves.
+
+### Getting back to 8.0
+
+```bash
+uname -r     # need 7.0.14 or later
+```
+
+When forge is on 7.0.14+, follow [Upgrading → MongoDB](#mongodb) above: backup,
+delete the volume, change the pin, restore. The kernel upgrade is the part that
+needs care, not the Mongo bump — forge runs the NVIDIA driver via DKMS for
+Frigate and Immich, so verify `nvidia-smi` and the Frigate detector come back
+before touching this stack.
+
+Tracked in [decisions.md](decisions.md#still-open) so the pin does not quietly
+become permanent.
 
 ---
 
@@ -268,3 +335,14 @@ an empty `/data/db`. If the `unifi_db` volume already existed — from a first
 attempt, or because Mongo started once without the script mounted — it was
 skipped and the user was never created. Delete the volume and redeploy; do not
 try to repair it.
+
+This is the likely state after the kernel incompatibility above: the 8.0
+container created the volume and then refused to start, so the init script never
+ran and never will on that volume. Deleting it is part of the fix, not an extra
+step.
+
+```bash
+cd stacks/unifi && docker compose down
+docker volume rm unifi_unifi_db
+cd ../.. && ./scripts/deploy.sh unifi
+```

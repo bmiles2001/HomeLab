@@ -136,12 +136,32 @@ services:
     # directory written by a newer major and does no automatic upgrade, so
     # `latest` here is a time bomb that goes off on an unrelated redeploy.
     #
-    # UniFi 9.0+ supports MongoDB 8.0; 8.1+ supported 3.6-7.0. Bumping this
-    # major is a documented procedure, not an edit - docs/unifi.md#upgrading-mongodb.
+    # 7.0 AND NOT 8.0, which is not the obvious choice and is not permanent.
+    #
+    # MongoDB 8.0+ vendors a TCMalloc that depends on undocumented kernel rseq
+    # behaviour which Linux 6.19 removed. Rather than crash, MongoDB checks the
+    # kernel version at startup and refuses to run on 6.19 through 7.0.13:
+    #
+    #   "MongoDB cannot start: Linux kernel versions 6.19 and newer has a
+    #    known incompatibility with this version of MongoDB"  (id 12257600)
+    #
+    # forge is on an affected kernel, which is how this was found. It is a
+    # version check rather than a runtime failure, so the GLIBC_TUNABLES
+    # workaround circulating in forum threads does not get past it - the
+    # process never reaches the allocator.
+    #
+    # 7.0 predates the per-CPU TCMalloc change entirely and is unaffected.
+    # UniFi has supported 3.6-7.0 since its own 8.1, so this is a supported
+    # combination and not a hack, just an older one than intended.
+    #
+    # THE WAY OUT is kernel 7.0.14+, which fixes the incompatibility - then
+    # this goes back to 8.0 via the procedure in docs/unifi.md#upgrading-mongodb.
+    # Do not simply bump the number: that is the one change in this file that
+    # silently destroys data. Tracked in docs/decisions.md#still-open.
     #
     # Mongo >4.4 on x86_64 needs AVX. The i9 in forge has it; this is only a
     # problem if this stack is ever moved to an older low-end box.
-    image: docker.io/mongo:${MONGO_VERSION:-8.0}
+    image: docker.io/mongo:${MONGO_VERSION:-7.0}
     restart: unless-stopped
 
     environment:
