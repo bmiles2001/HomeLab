@@ -314,6 +314,13 @@ real backup, which it does not yet have. See
 
 ## UniFi publishes ports, and has to
 
+**Retired.** True of the legacy Network Application, which is now parked. The
+controller in use is on macvlan with its own LAN address and publishes nothing
+— see [the macvlan section above](#and-it-gets-a-real-address-on-the-lan-via-macvlan).
+Kept because the reasoning is still correct for anyone running the container
+version, and because it is the argument that eventually produced the better
+answer.
+
 A real exception to [only Caddy publishes ports](#one-shared-proxy-network),
 and the first one a container has been granted.
 
@@ -579,11 +586,38 @@ It stays LAN-only permanently, same rule as Frigate. If the trade stops looking
 acceptable, the exit is a Cloud Key — hardware that does this job with no
 privileges on anything of ours.
 
-What it does **not** solve is discovery. A bridge-networked container still
-cannot see the access points' broadcasts, so adoption is `set-inform` per
-device exactly as before. macvlan is the real fix and is written up in
-[unifi-os.md](unifi-os.md#if-discovery-matters), deliberately not done: four
-devices adopted once by hand beats a network type nobody here has debugged.
+### And it gets a real address on the LAN, via macvlan
+
+Containerising alone would not have fixed discovery — a bridged controller sits
+behind NAT on `172.18.x.x` while the access points broadcast on `10.0.0.x`, and
+broadcasts do not survive DNAT. It could be talked to and could never find
+anything.
+
+So `bootstrap.sh` now creates a third network, `lan`: macvlan on the
+default-route NIC, allocating from `10.0.0.16/28`. The controller takes
+`10.0.0.20` and is genuinely on the house segment, with its own MAC.
+
+The pleasing consequence is that **this stack publishes no ports at all**, and
+[UniFi publishes ports, and has to](#unifi-publishes-ports-and-has-to) is
+retired. There is nothing to except: it does not borrow the host's ports
+because it has its own address. `bootstrap.sh`'s allow-list is back to `caddy`
+plus the parked legacy stack, and `unifi-os-server` appearing there again would
+now be a *signal that something broke*.
+
+Three things this costs, all documented in
+[unifi-os.md](unifi-os.md#discovery-and-macvlan):
+
+- **`10.0.0.16`–`10.0.0.31` must be excluded from the Orbi's DHCP pool.**
+  Docker allocates from that block knowing nothing about the router, and the
+  router leases from it knowing nothing about Docker. The collision is
+  intermittent and looks like the controller vanishing for no reason.
+- **forge itself cannot reach `10.0.0.20`.** The kernel does not bridge a
+  parent NIC to its own macvlan children. This is why the container stays on
+  `proxy` as well — Caddy is a container on that bridge, not a process on the
+  host, so it is unaffected. Drop `proxy` and the route dies.
+- **Every port the image opens is on the LAN**, since it is a real host there.
+  That is the honest trade for being one, and no worse than the appliance this
+  replaces.
 
 ## UniFi OS Server runs on the host, on trial
 

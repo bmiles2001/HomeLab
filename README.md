@@ -19,8 +19,9 @@ stacks/
   homeassistant/      the iphone app for the cameras, and house automation.
   unifi/              PARKED. the legacy Network Application. kept as the
                       rollback path for unifi-os/, not deployed.
-  unifi-os/           the switch and access points. UniFi OS Server, and the
-                      most privileged container here - read docs/unifi-os.md.
+  unifi-os/           the switch and access points. UniFi OS Server, on its own
+                      LAN address. The most privileged container here, and the
+                      only one not behind NAT - read docs/unifi-os.md first.
 scripts/
   deploy.sh           deploy a stack with secrets injected from Infisical
   compose.sh          compose commands that need real secret values (config,
@@ -72,11 +73,16 @@ just tidiness: Docker writes its iptables rules ahead of UFW's, so a published
 port is reachable from the LAN no matter what `ufw status` claims. One
 container publishing ports is a decision; two is an accident.
 
-The exception is `unifi`, which publishes three device-facing ports because
-switches and access points speak raw UDP to their controller and a reverse
-proxy cannot carry it. Its web UI still goes through Caddy. `bootstrap.sh`
-allow-lists it by name, so a third publisher still shows up as a warning —
-see [docs/decisions.md](docs/decisions.md#unifi-publishes-ports-and-has-to).
+The exception is `unifi`, the parked legacy controller, which publishes
+device-facing ports if it is ever brought back. `bootstrap.sh` allow-lists it
+by name so anything else still warns.
+
+The controller actually in use, `unifi-os/`, solves this a different way: it is
+on a **macvlan** network with its own address on the house LAN, so it publishes
+nothing and borrows nothing. That is a third network alongside `proxy` and
+`iot`, and it comes with a rule of its own — `10.0.0.16`–`10.0.0.31` must stay
+out of the Orbi's DHCP pool. See
+[docs/unifi-os.md](docs/unifi-os.md#discovery-and-macvlan).
 
 ---
 
@@ -110,10 +116,11 @@ cd ../.. && ./scripts/deploy.sh caddy
 ./scripts/deploy.sh frigate
 ./scripts/deploy.sh homeassistant
 
-# 5. The network controller. No dependencies. Do first-run setup directly on
-#    https://10.0.0.4:11443, NOT through the Caddy hostname - see
-#    docs/unifi-os.md. This is the most privileged container here; read that
-#    doc before deploying it rather than after.
+# 5. The network controller. No dependencies, but it needs the `lan` macvlan
+#    network from bootstrap.sh and 10.0.0.16-.31 excluded from the Orbi's DHCP
+#    pool. Do first-run setup at https://10.0.0.20 directly, NOT through the
+#    Caddy hostname. Most privileged container here - read docs/unifi-os.md
+#    before deploying rather than after.
 ./scripts/deploy.sh unifi-os
 ```
 

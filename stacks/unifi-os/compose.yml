@@ -23,12 +23,10 @@ name: unifi-os
 #    grant than anything else in this repo, and it is the real price of this
 #    approach. See docs/unifi-os.md#what-this-container-can-do-to-the-host.
 #
-# 3. It does NOT fix device discovery on its own. A bridge-networked container
-#    still cannot see the access points' broadcasts. Adoption is by
-#    `set-inform`, exactly as it was before. macvlan is the fix and is written
-#    up in docs/unifi-os.md#if-discovery-matters - deliberately not done yet,
-#    because four devices adopted once by hand is cheaper than a new network
-#    type nobody has debugged.
+# 3. It is on the LAN directly, via macvlan, at a fixed address. That is what
+#    makes discovery and one-click adoption work, and it is why this stack
+#    publishes NO PORTS AT ALL - it does not need to borrow the host's. It is
+#    the only container here that is not behind NAT.
 
 services:
   unifi-os-server:
@@ -75,10 +73,15 @@ services:
       # and then vanish - the same failure the legacy stack had, except this
       # time it is declared here instead of clicked into a settings page.
       #
-      # forge's LAN address, not the Caddy hostname: an access point resolving
-      # DNS is one more thing that can fail at 11pm. Devices reach 8080 here
-      # through the published port below.
-      UOS_SYSTEM_IP: ${LAN_IP:-10.0.0.4}
+      # The container's OWN macvlan address, not forge's. Devices reach it
+      # directly on the LAN - no NAT, no published port, no host involved.
+      # An IP rather than the Caddy hostname on purpose: an access point
+      # depending on DNS is one more thing that can fail at 11pm.
+      #
+      # Must match `ipv4_address` below. If they ever disagree, devices adopt
+      # against one address and are told to report to another, which presents
+      # as adoption succeeding and the device dropping off minutes later.
+      UOS_SYSTEM_IP: ${UNIFI_OS_IP:-10.0.0.20}
 
     volumes:
       # Required for systemd. Read-write, and yes, that is as broad as it reads.
@@ -96,42 +99,36 @@ services:
       - ${UNIFI_OS_ROOT:-/srv/unifi-os}/var-lib-mongodb:/var/lib/mongodb
       - ${UNIFI_OS_ROOT:-/srv/unifi-os}/etc-rabbitmq-ssl:/etc/rabbitmq/ssl
 
-    ports:
-      # Device-facing, and bound to the LAN address so the interface is a
-      # decision. Same exception to README rule 2 the legacy stack had, for
-      # the same reason: switches and APs speak raw protocols a reverse proxy
-      # cannot carry. docs/decisions.md#unifi-publishes-ports-and-has-to.
-      #
-      # 8080/tcp  - inform. Devices post state and receive config.
-      - "${LAN_IP:-10.0.0.4}:8080:8080"
-      # 3478/udp  - STUN. Without it devices adopt and then flap.
-      - "${LAN_IP:-10.0.0.4}:3478:3478/udp"
-
-      # 10003/udp - discovery. NOTE THE PORT CHANGED: the legacy Network
-      # Application used 10001. Not bound to a single address, because devices
-      # announce by broadcast and a socket bound to 10.0.0.4 never sees
-      # traffic addressed to the subnet broadcast.
-      - "10003:10003/udp"
-
-      # The web UI, on the LAN as well as through Caddy. Unusual for this repo,
-      # and temporary-ish: the legacy stack's first-run wizard failed through
-      # the reverse proxy with a bare 403, and being able to reach the console
-      # directly at https://10.0.0.4:11443 is what makes that debuggable
-      # rather than mysterious. Remove this line once setup is complete and
-      # unifi.brent-miles.com is proven.
-      #
-      # 11443 on the host because 443 inside the container is UniFi OS's own
-      # portal - the port collision that made the host install unattractive
-      # exists here too, it is just contained.
-      - "${LAN_IP:-10.0.0.4}:11443:443"
-
-      # Deliberately NOT published - no hotspot, no guest portal, no VoIP:
-      #   5005 RTP  9543 Identity Hub  6789 speed test  8444 secure portal
-      #   5514 syslog  5671 AMQPS  8880/8881/8882 hotspot redirects
-      # Add one only with a reason, and put the reason here.
+    # NO `ports:` SECTION, AND THAT IS THE POINT.
+    #
+    # An earlier draft published 8080, 3478/udp, 10003/udp and 11443 on the
+    # host and needed a documented exception to README rule 2. On macvlan the
+    # container owns 10.0.0.20 outright: devices reach 8080 and 3478 there
+    # directly, discovery broadcasts arrive because it is genuinely on the
+    # same segment, and the console is on 443 of its own address. Nothing is
+    # borrowed from the host, so there is nothing to except.
+    #
+    # This means every port the image opens is reachable from the LAN, which
+    # is the honest trade for being a real host on it - the same as any
+    # appliance you might have bought instead.
 
     networks:
-      - proxy    # caddy reaches the console at unifi-os-server:443
+      # The house LAN. Fixed address because UOS_SYSTEM_IP above names it and
+      # every adopted device will store it. Must sit inside `lan`'s
+      # --ip-range (10.0.0.16/28) and be excluded from the Orbi's DHCP pool.
+      lan:
+        ipv4_address: ${UNIFI_OS_IP:-10.0.0.20}
+        # Higher priority makes this the default route rather than `proxy`,
+        # so the controller's outbound traffic leaves via the house gateway
+        # with a LAN source address. Devices and Ubiquiti's cloud both see a
+        # consistent address that way.
+        priority: 100
+      # Still on `proxy`, so Caddy reaches the console by container name.
+      # Necessary, not redundant: the HOST cannot talk to a macvlan address
+      # by design, and Caddy is a container on this bridge rather than a
+      # process on forge. See docs/unifi-os.md#the-host-cannot-reach-it.
+      proxy:
+        priority: 10
 
     # No healthcheck. The image ships none, and a naive check against 443
     # would report healthy while the Network application inside is still
@@ -139,5 +136,9 @@ services:
     # console itself are the honest checks.
 
 networks:
+  # Both created out of band by bootstrap.sh and declared external, so no
+  # stack owns them and tearing this one down cannot delete them.
+  lan:
+    external: true
   proxy:
     external: true

@@ -4,8 +4,8 @@ The controller for the house switch and access points. UniFi OS Server —
 Ubiquiti's current self-hosted product — running as a container rather than as
 a host install.
 
-Reached at `https://unifi.brent-miles.com` from the LAN, through Caddy, and
-directly at `https://10.0.0.4:11443` during setup.
+Reached at `https://unifi.brent-miles.com` through Caddy, and directly at
+`https://10.0.0.20` — the container has its own address on the house LAN.
 
 ```bash
 ./scripts/deploy.sh unifi-os
@@ -104,71 +104,102 @@ it so a missing case stays a mistake rather than a blank cheque. First start is
 slow — systemd brings up MongoDB and RabbitMQ before the Network application,
 and the console answers on 443 well before it is usable.
 
-### 4. Set up on 11443, not through Caddy
+### 4. Set up directly, not through Caddy
 
-Go to **`https://10.0.0.4:11443`** and accept the self-signed certificate.
+Go to **`https://10.0.0.20`** from your PC and accept the self-signed
+certificate.
 
-Do the first-run setup here rather than at `unifi.brent-miles.com`. The legacy
+Do first-run setup here rather than at `unifi.brent-miles.com`. The legacy
 application's wizard failed through the reverse proxy with a bare `403` on
-`/api/cmd/sitemgr` and no message; whether this one does is unknown, and
-finding out during setup is not the time. Once an admin exists and you can log
-in, switch to the Caddy hostname and confirm it works.
+`/api/cmd/sitemgr` and no message; whether this one does is unknown, and setup
+is not when you want to find out. Once an admin exists and you can log in,
+switch to the Caddy hostname and confirm that works too.
 
-`UOS_SYSTEM_IP` is already set to `10.0.0.4` in the compose file, so the inform
-address is correct from the start — no settings page to remember, unlike the
+`UOS_SYSTEM_IP` is already `10.0.0.20` in the compose file, so the inform
+address is right from the start — no settings page to remember, unlike the
 legacy stack.
-
-### 5. Remove the direct port, once it is proven
-
-Delete the `11443` line from `stacks/unifi-os/compose.yml` and redeploy. It
-exists for setup and debugging, and every published port that outlives its
-reason is how the "only Caddy publishes ports" rule dies quietly.
 
 ---
 
-## Adoption
+## Discovery and macvlan
 
-Discovery does not work, and this container does not change that. It sits on a
-Docker bridge at `172.18.x.x` while the access points broadcast on
-`10.0.0.x` — the published `10003/udp` carries unicast fine but subnet
-broadcasts do not survive DNAT.
+This is the reason the stack looks the way it does.
 
-So adopt each device by hand, once:
+A normal Docker container sits behind NAT on a bridge — `172.18.x.x` — while
+the access points broadcast on `10.0.0.x`. Unicast survives a published port;
+broadcasts do not survive DNAT. So a bridged controller can be *talked to* but
+can never *find* anything, and every adoption becomes a manual `set-inform`
+against an IP you had to go and look up.
 
-```bash
-ssh ubnt@<device-ip>
-set-inform http://10.0.0.4:8080/inform
-```
-
-Default password `ubnt`. Note `http`, not `https`, and port `8080` — this is
-the inform channel, not the console. Using the console address here fails
-silently.
-
-If the devices are currently adopted to something else — a Cloud Key, or the
-phone app's local controller — take a full backup there first and restore it
-through the setup wizard. The restore brings the device keys with it and they
-re-adopt themselves once they can reach the inform address.
-
-### If discovery matters
-
-The fix is macvlan: give the container its own address on the real LAN, so it
-shares a broadcast domain with the hardware.
+macvlan gives the container its own MAC and its own address on the real
+segment. `bootstrap.sh` creates it:
 
 ```bash
-# in bootstrap.sh, alongside `proxy` and `iot`
 docker network create -d macvlan \
   --subnet 10.0.0.0/24 --gateway 10.0.0.1 \
-  -o parent=<nic> lan
+  --ip-range 10.0.0.16/28 \
+  -o parent=<default-route-nic> lan
 ```
 
-Then join both networks — `lan` for the devices, `proxy` so Caddy keeps
-working — with a reserved address outside the Orbi's DHCP pool. The published
-ports all become unnecessary at that point, which would also retire this
-stack's exception to README rule 2.
+The container joins `lan` at `10.0.0.20` and `proxy` for Caddy. Adoption is
+then what it should be: unadopted devices appear in the console on their own
+and you click Adopt.
 
-**Deliberately not done yet.** Four devices adopted by hand, once, is cheaper
-than introducing a network type nobody here has debugged, and `set-inform`
-works. Revisit when device count makes that false.
+### Reserve the range in the Orbi
+
+`--ip-range 10.0.0.16/28` is `10.0.0.16`–`10.0.0.31`. **Exclude that block from
+the Orbi's DHCP pool.** Docker allocates from it with no idea the router
+exists, and the router hands out leases with no idea Docker does. The collision
+is intermittent and presents as the controller vanishing for no reason.
+
+### The host cannot reach it
+
+A quirk of macvlan, not a misconfiguration: **forge itself cannot talk to
+`10.0.0.20`.** The kernel does not bridge a parent interface to its own macvlan
+children. From your PC it works fine; from the machine hosting the container it
+does not.
+
+Consequences worth knowing before they confuse you:
+
+- `curl https://10.0.0.20` **from forge** fails. From anywhere else it works.
+- This is precisely why the container is still on `proxy`. Caddy is a container
+  on that bridge, not a process on the host, so it reaches
+  `unifi-os-server:443` normally. Drop `proxy` and the Caddy route dies.
+- `docker exec` and `docker logs` work as usual.
+
+If host access is ever genuinely needed, the fix is a macvlan shim interface on
+forge. It isn't needed today and adds host state, so it isn't there.
+
+### Parent interface and promiscuous mode
+
+`bootstrap.sh` detects the parent from the default route and checks the NIC for
+`PROMISC`. macvlan needs the NIC to accept frames for MACs that aren't its own;
+when it doesn't, the container looks perfectly configured and receives
+absolutely nothing. Override the detection if forge grows a second NIC:
+
+```bash
+LAN_PARENT=enp5s0 ./bootstrap.sh
+```
+
+Wi-Fi parent interfaces do not work with macvlan at all. forge is wired.
+
+### Manual adoption, if you still need it
+
+Discovery should make this unnecessary, but it still works and is worth
+knowing:
+
+```bash
+ssh ubnt@<device-ip>          # default password: ubnt
+set-inform http://10.0.0.20:8080/inform
+```
+
+Note `http`, not `https`, and port `8080` — the inform channel, not the
+console. Using the console address here fails silently.
+
+If the devices are currently adopted elsewhere — a Cloud Key, or the phone
+app's local controller — take a full backup there first and restore it through
+the setup wizard. The restore brings the device keys with it and they re-adopt
+themselves once they can reach the inform address.
 
 ---
 
@@ -219,17 +250,18 @@ was. Devices will need their inform host pointed back at the old controller.
 
 ## Things that will look like bugs
 
-**Nothing on 443 from the host.** Correct. 443 is inside the container. Caddy
-reaches it over the `proxy` network; you reach it at `11443` or through the
-hostname.
+**Nothing on 443 from the host, and `ss -tlnp` shows no UniFi ports at all.**
+Correct. This stack publishes nothing — it has its own LAN address. If
+`bootstrap.sh` ever reports `unifi-os-server` as a stray port publisher,
+something has gone wrong with the `lan` network and it has fallen back to
+borrowing the host's.
 
-**`bootstrap.sh` lists a third port publisher.** Expected — `unifi-os-server`
-is on the allow-list alongside `caddy` and `unifi`. A fourth is still a
-warning.
+**`curl https://10.0.0.20` fails on forge but works from your PC.** Expected,
+and explained above under [the host cannot reach it](#the-host-cannot-reach-it).
 
-**Devices adopt and then go offline minutes later.** `UOS_SYSTEM_IP` is wrong,
-or 3478/udp is not reaching the container. The first is in the compose file,
-not a settings page.
+**Devices adopt and then go offline minutes later.** `UOS_SYSTEM_IP` and
+`ipv4_address` disagree. Both are in the compose file and must match; devices
+adopt against one address and are told to report to the other.
 
 **The console is slow for the first few minutes.** systemd is starting MongoDB
 and RabbitMQ underneath. `docker logs -f unifi-os-server` shows the truth.

@@ -86,6 +86,64 @@ else
   ok "network 'iot' created ($(docker network inspect iot -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}'), internal)"
 fi
 
+# --- 3c. the lan network (macvlan) ------------------------------------------
+# Gives a container a real address on the house LAN, with its own MAC, sharing
+# a broadcast domain with the hardware. Exactly one stack needs this: the UniFi
+# controller, which has to see access points' discovery broadcasts and cannot
+# from behind NAT. See docs/unifi-os.md#discovery-and-macvlan.
+#
+# Unlike `proxy` and `iot`, this network has no subnet of its own - it IS the
+# house subnet. Docker is told the range so it can allocate without colliding,
+# and `--ip-range` confines its choices to a small block that must be excluded
+# from the Orbi's DHCP pool. Everything outside that block stays the router's.
+#
+# THE PARENT INTERFACE MATTERS. macvlan attaches to a physical NIC; a wrong
+# guess produces a network that creates fine and carries nothing. Detected from
+# the default route, overridable for the day forge grows a second NIC:
+#   LAN_PARENT=enp5s0 ./bootstrap.sh
+LAN_SUBNET="${LAN_SUBNET:-10.0.0.0/24}"
+LAN_GATEWAY="${LAN_GATEWAY:-10.0.0.1}"
+LAN_IP_RANGE="${LAN_IP_RANGE:-10.0.0.16/28}"     # .16-.31, reserve these
+LAN_PARENT="${LAN_PARENT:-$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)}"
+
+if [[ -z "$LAN_PARENT" ]]; then
+  warn "cannot detect the default-route interface - skipping the 'lan' network"
+  echo "        LAN_PARENT=<nic> ./bootstrap.sh"
+elif ! ip link show "$LAN_PARENT" >/dev/null 2>&1; then
+  warn "LAN_PARENT='$LAN_PARENT' is not an interface on this box"
+elif docker network inspect lan >/dev/null 2>&1; then
+  actual_parent="$(docker network inspect lan -f '{{index .Options "parent"}}' 2>/dev/null)"
+  if [[ "$actual_parent" == "$LAN_PARENT" ]]; then
+    ok "network 'lan' exists (macvlan on $actual_parent)"
+  else
+    # Not fixable in place - macvlan options are set at creation time.
+    warn "network 'lan' is on '$actual_parent', expected '$LAN_PARENT'"
+    echo "        docker network rm lan && ./bootstrap.sh   (stops anything using it)"
+  fi
+else
+  docker network create -d macvlan \
+    --subnet "$LAN_SUBNET" \
+    --gateway "$LAN_GATEWAY" \
+    --ip-range "$LAN_IP_RANGE" \
+    -o parent="$LAN_PARENT" \
+    lan >/dev/null
+  ok "network 'lan' created (macvlan on $LAN_PARENT, allocating from $LAN_IP_RANGE)"
+  warn "reserve $LAN_IP_RANGE in the Orbi's DHCP settings if you have not"
+  echo "        the router does not know Docker is handing out these addresses"
+fi
+
+# macvlan needs the parent NIC to accept frames for MACs that are not its own.
+# Docker usually arranges this; when it does not, the symptom is a container
+# that looks perfectly configured and receives nothing at all.
+if [[ -n "${LAN_PARENT:-}" ]] && ip link show "$LAN_PARENT" >/dev/null 2>&1; then
+  if ip link show "$LAN_PARENT" | grep -q PROMISC; then
+    ok "$LAN_PARENT is in promiscuous mode"
+  else
+    warn "$LAN_PARENT is not in promiscuous mode - macvlan may receive nothing"
+    echo "        sudo ip link set $LAN_PARENT promisc on"
+  fi
+fi
+
 # --- 4. data directories ----------------------------------------------------
 for d in /srv/immich/data /srv/caddy /srv/infisical /srv/backups/infisical \
          /srv/frigate/media /srv/frigate/models /srv/homeassistant/config \
@@ -155,7 +213,12 @@ fi
 # Note this only catches ports published on all interfaces. unifi's 8080 and
 # 3478 are bound to the LAN address specifically and never matched here in the
 # first place; 10001/udp is, and is what the allow-list is for.
-ALLOWED_PUBLISHERS='caddy|unifi|unifi-os-server'
+# `unifi` is the parked legacy stack, which publishes device-facing ports if it
+# is ever brought back. `unifi-os-server` is deliberately NOT here: on macvlan
+# it has its own LAN address and publishes nothing, so if it ever shows up in
+# this list something has gone wrong with the network and it has fallen back to
+# borrowing the host's ports.
+ALLOWED_PUBLISHERS='caddy|unifi'
 strays=$(docker ps --format '{{.Names}}|{{.Ports}}' \
   | grep -E '0\.0\.0\.0:|:::' \
   | grep -vE "^($ALLOWED_PUBLISHERS)\|" | cut -d'|' -f1 || true)
