@@ -1,0 +1,213 @@
+name: beszel
+
+# Server monitoring for forge: CPU, memory, disk, network, GPU, temperatures,
+# and per-container stats, with history and alerts.
+#
+# Deploy:  ./scripts/deploy.sh beszel
+#
+# FIRST DEPLOY IS TWO PHASES and the second one cannot be skipped. The agent's
+# credentials are minted BY the hub, so they cannot exist in Infisical before
+# the hub has run once. See docs/beszel.md#first-deploy.
+#
+# Required secrets are validated by deploy.sh, not by ${VAR:?} guards in this
+# file, so plain `docker compose down/logs/ps` works in this directory.
+#
+# Two containers, and they are deliberately asymmetric:
+#
+#   beszel        the hub. Web UI and database. On `proxy`, publishes nothing,
+#                 reached by Caddy at status.<domain>. Ordinary app.
+#   beszel-agent  the collector. On the HOST network with a read-only docker
+#                 socket. The most privileged container here after unifi-os,
+#                 and the reasons are written out below rather than assumed.
+
+services:
+  beszel:
+    container_name: beszel
+    image: docker.io/henrygd/beszel:${BESZEL_VERSION:-0.18.7}
+    restart: unless-stopped
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+      # Used for links in alert emails and for OAuth redirects - NOT for
+      # serving. Getting it wrong doesn't break the UI, it breaks the link in
+      # the notification you get at 3am, which is worse.
+      #
+      # DOMAIN has to be duplicated into Infisical under /beszel; deploy.sh
+      # reads one path per stack. That is the same duplication /ddns has, and
+      # it is cheaper than teaching deploy.sh about shared paths.
+      APP_URL: https://status.${DOMAIN}
+
+    volumes:
+      # SQLite (PocketBase) - users, systems, history, alert rules. Bind mount
+      # rather than a named volume so it lands on /srv with everything else
+      # that is worth backing up.
+      - ${BESZEL_DATA:-/srv/beszel/data}:/beszel_data
+
+      # The channel between hub and agent, and the reason neither of them
+      # needs a port. See the agent's comments below.
+      - ${BESZEL_SOCKET:-/srv/beszel/socket}:/beszel_socket
+
+    networks:
+      - proxy    # reached by caddy at beszel:8090
+
+    # No published ports. 8090 is the UI and the API on one listener, with no
+    # LAN guard of its own - the guard is Caddy's, in the *.{$DOMAIN} block.
+
+    healthcheck:
+      # Exec form, no shell: the image is minimal and has no curl or wget.
+      test: ["CMD", "/beszel", "health", "--url", "http://localhost:8090"]
+      interval: 120s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  beszel-agent:
+    container_name: beszel-agent
+
+    # The -nvidia variant, not the base image. It carries nvidia-smi, which is
+    # what reports the 3080's utilisation, VRAM, temperature and power draw.
+    # The base image would run fine and silently show no GPU at all.
+    #
+    # It also carries smartctl, which the base image does not - see the
+    # commented S.M.A.R.T. block at the bottom of this service.
+    image: docker.io/henrygd/beszel-agent-nvidia:${BESZEL_VERSION:-0.18.7}
+    restart: unless-stopped
+
+    # THE EXCEPTION TO RULE 2, and a narrow one. Host networking is required
+    # because network throughput is read from the host's interfaces, which a
+    # bridge network does not expose - a bridged agent reports the traffic of
+    # its own veth pair, which is a number that looks plausible and is wrong.
+    #
+    # It does NOT publish a port, which is the part that matters. Upstream's
+    # config sets LISTEN=45876 and host networking then puts that straight
+    # onto the LAN, unauthenticated-ish, on every interface. LISTEN below is a
+    # unix socket instead, so this container binds no TCP port at all and
+    # bootstrap.sh's check 6 stays honest rather than needing an allow-list
+    # entry. See docs/decisions.md#beszels-agent-is-on-the-host-network.
+    network_mode: host
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+      # A path, not a port. The hub reaches the agent over this socket on the
+      # shared bind mount, which is why the two containers can be on different
+      # networks and still talk. In the hub's UI the system's "Host / IP" is
+      # the literal string /beszel_socket/beszel.sock.
+      LISTEN: /beszel_socket/beszel.sock
+
+      # Both minted by the hub on first run and then stored in Infisical under
+      # /beszel. KEY is the hub's public key, TOKEN authenticates the agent.
+      # Empty defaults so plain `docker compose config` doesn't warn; the real
+      # check is required_vars() in scripts/deploy.sh.
+      #
+      # Stored under the same names Beszel uses rather than as BESZEL_KEY and
+      # BESZEL_TOKEN, which reads worse and works worse. bootstrap.sh's check
+      # 6d looks for the name from required_vars() inside the running
+      # container's environment and skips anything it doesn't find - so a
+      # renamed variable is not detected as blank, it is silently not checked.
+      # Infisical paths are per stack, so plain KEY and TOKEN cannot collide.
+      KEY: ${KEY:-}
+      TOKEN: ${TOKEN:-}
+
+      # Default is nvidia-smi. `nvml` lets the card drop into its low-power
+      # RTD3 state between samples, which nvidia-smi polling can prevent - not
+      # worth chasing while Frigate keeps the 3080 awake anyway, but it is a
+      # one-word change if the card is ever idle. It is still marked
+      # experimental upstream.
+      # GPU_COLLECTOR: nvml
+
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+
+      # The agent's own small state (its half of the key exchange).
+      - ${BESZEL_AGENT_DATA:-/srv/beszel/agent}:/var/lib/beszel-agent
+
+      # Same host path the hub mounts. The agent creates the socket here.
+      - ${BESZEL_SOCKET:-/srv/beszel/socket}:/beszel_socket
+
+      # Per-container CPU, memory and network.
+      #
+      # `:ro` HERE IS DECORATION. It is kept because it costs nothing and it is
+      # the upstream convention, but do not read it as a control. A read-only
+      # bind mount stops the socket FILE being replaced or chmod'd; it does not
+      # stop anything being sent through it, because connect() and send() are
+      # not filesystem writes. Every Docker API verb still works, including
+      # POST /containers/create.
+      #
+      # So the honest statement is: this container is root on forge. Not "can
+      # read secrets" - root. Anything that can speak to this socket can create
+      # a privileged container with / bind-mounted and step straight out.
+      #
+      # That is the price of the container graph in the UI, and it is why the
+      # commented S.M.A.R.T. block below adds no risk while this line exists.
+      # The fix, if it stops being acceptable, is a socket proxy -
+      # docs/beszel.md#the-docker-socket-is-the-real-cost.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+      # /srv is a separate LVM volume (ubuntu-vg/data, 984G) and would
+      # otherwise be invisible here - the agent charts the filesystems it can
+      # see, and it can only see its own. Mounting any directory that lives on
+      # a filesystem into /extra-filesystems/<label> gets that filesystem its
+      # own chart; an empty marker directory is used so nothing real is
+      # exposed even read-only. bootstrap.sh creates it.
+      #
+      # Root (ubuntu-vg/ubuntu-lv, 394G) needs no equivalent: the container's
+      # own / is an overlay on it and reports its size and usage already.
+      #
+      # See docs/storage-expansion.md#layout.
+      - ${BESZEL_SRV_MARKER:-/srv/.beszel}:/extra-filesystems/srv:ro
+
+    # The RTX 3080. `utility` only - that capability is nvidia-smi and the
+    # management libraries, and nothing else. Frigate and Immich ask for the
+    # full `gpu` capability because they compute on the card; this container
+    # only reads its sensors, and asking for more would put a monitoring tool
+    # in the same privilege class as the workloads it watches.
+    #
+    # `count: all` rather than 1 so a second card is picked up without an edit
+    # - see docs/decisions.md#the-two-gpus-get-one-workload-each.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - utility
+
+    # S.M.A.R.T. for the NVMe, deliberately left off. Uncomment both blocks
+    # together to answer docs/storage-expansion.md's "Still to do: drive
+    # health" - Percentage Used and Media Errors on the one disk that carries
+    # everything, charted and alerted on rather than remembered about.
+    #
+    # It is not on by default, but NOT because it stacks with the docker
+    # socket - it does not. The socket above is already root-equivalent, so
+    # SYS_ADMIN grants this container nothing it cannot already reach. The two
+    # are alternative routes to the same place, not two locks on one door.
+    #
+    # The reason to leave it off is what happens AFTER the socket proxy in
+    # docs/beszel.md goes in. That work exists to take this container out of
+    # the root-equivalent class; SYS_ADMIN plus a raw NVMe controller would
+    # keep it there, and the proxy would be effort spent for nothing.
+    #
+    # Turn it on now if SMART matters more than a mitigation that isn't built
+    # yet - today it changes the blast radius by zero.
+    #
+    # /dev/nvme0 is the CONTROLLER, not /dev/nvme0n1 the block device. Passing
+    # the block device returns no SMART data and no error worth reading.
+    # devices:
+    #   - /dev/nvme0:/dev/nvme0
+    # cap_add:
+    #   - SYS_RAWIO   # SATA/ATA passthrough
+    #   - SYS_ADMIN   # NVMe admin passthrough
+
+    # healthcheck:
+    #   Upstream ships `/agent health`, documented against a TCP LISTEN. It is
+    #   left off here because LISTEN is a unix socket and the check has not
+    #   been confirmed against that. Nothing restarts on unhealthy in this
+    #   repo anyway - the hub going quiet is the real alarm, and it alerts.
+    #   test: ["CMD", "/agent", "health"]
+
+networks:
+  proxy:
+    external: true

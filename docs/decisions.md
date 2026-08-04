@@ -683,6 +683,72 @@ failure into rule 2, self-inflicted.
 
 See [unifi-os-server.md](unifi-os-server.md).
 
+## Beszel over Prometheus, and over nothing
+
+Monitoring was the thing this box did not have. `storage-expansion.md` records
+root reaching 92% full, and nothing said so — it was noticed. The 3080 now runs
+both Frigate's detector and Immich's ML, and the contention warning written into
+[the GPU amendment](#amendment-frigate-moves-to-the-3080) has no instrument
+behind it. `restart: unless-stopped` makes a crash-looping container look
+exactly like a healthy one.
+
+**Prometheus + Grafana + node_exporter + cAdvisor** is the default answer and
+was rejected for the same reason Komodo was: it is four moving parts, a scrape
+config, and dashboard JSON that becomes a second source of truth competing with
+this repo. It is the right answer when you need custom queries over metrics
+nobody thought to collect. That is not this house.
+
+**Beszel** is a Go binary and a SQLite file. Its cost is that you get the
+metrics it chose — no arbitrary queries, no PromQL — and its benefit is that
+there is nothing to maintain. Alert rules live in its database, which is the
+same escape from git that Home Assistant has, and it is written down in
+[beszel.md](beszel.md#alerts) rather than pretended away.
+
+**Netdata** was the closer call — better per-metric depth, and agentless in the
+sense that one install gives you everything. It was passed over for resource
+footprint and for defaulting to a cloud account, which is the wrong direction
+for a house that runs Immich specifically to not be on someone else's server.
+
+### Beszel's agent is on the host network
+
+The second exception to rule 2, and narrower than UniFi's.
+
+Network throughput is read from the host's interfaces. An agent on a bridge
+network reports the traffic across its own veth pair instead — a number that is
+plausible and wrong, which is worse than a missing chart.
+
+What makes this acceptable is that it publishes nothing. Upstream's config sets
+`LISTEN=45876`, which under host networking puts a listener on every interface
+the box has. This stack sets `LISTEN` to a unix socket on a bind mount that both
+containers share, so the agent binds no TCP port at all. `bootstrap.sh`'s check
+6 needed no allow-list entry — and an allow-list entry is permanent, so needing
+none is the point.
+
+### And it holds the docker socket, which is the actual cost
+
+Per-container stats require `/var/run/docker.sock`. It is mounted `:ro`, and
+**`:ro` on a socket is decoration.** A read-only bind mount stops the socket
+file being replaced or chmod'd. It does not stop anything being sent through
+it, because `connect()` and `send()` are not filesystem writes — every Docker
+API verb still works, `POST /containers/create` included.
+
+Stated plainly, and this replaces a weaker claim an earlier draft of this file
+made: **that container is root on forge.** It can create a privileged container
+with `/` mounted and step out onto the host. Reading every secret `deploy.sh`
+injects, via `inspect`, is the quietest thing it could do rather than the worst.
+
+The rule this sets for the rest of the repo: a `:ro` socket mount is not a
+mitigation and must never be counted as one in any file here. The only real
+mitigation is a socket proxy holding the socket and returning 403 for
+everything but `GET /containers/*/stats` —
+[beszel.md](beszel.md#the-docker-socket-is-the-real-cost), and open, not built.
+
+A corollary that matters when reading the S.M.A.R.T. block in the compose file:
+`SYS_ADMIN` does **not** compound with this. The socket already grants
+everything `SYS_ADMIN` would. They are alternative routes to the same place,
+and the only reason to keep SMART off is that turning it on would make the
+socket proxy pointless when it is eventually built.
+
 ## Still open
 - **A backup for Home Assistant's data directory.** HA Container has no backup
   UI, and `/srv/homeassistant/config/.storage` holds every credential HA has.
@@ -693,6 +759,9 @@ See [unifi-os-server.md](unifi-os-server.md).
 - **A backup for UniFi OS Server's state**, if the trial succeeds. It holds
   every adoption key and all site history in podman volumes it owns, and
   updates itself. Same shape as the Home Assistant gap above.
+- **A socket proxy in front of Beszel's agent**, and a backup for
+  `/srv/beszel/data`. The first is the mitigation for the exposure described
+  above; the second is where the alert rules live, and they are not in git.
 - **UniFi's MongoDB is pinned back to 7.0, and shouldn't stay there.** MongoDB
   8.0+ refuses to start on Linux kernels 6.19 through 7.0.13 — a bundled
   TCMalloc depending on rseq behaviour the kernel stopped providing. 7.0 is

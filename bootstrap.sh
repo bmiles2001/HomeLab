@@ -150,7 +150,8 @@ for d in /srv/immich/data /srv/caddy /srv/infisical /srv/backups/infisical \
          /srv/unifi/config \
          /srv/unifi-os/persistent /srv/unifi-os/var-log /srv/unifi-os/data \
          /srv/unifi-os/srv /srv/unifi-os/var-lib-unifi \
-         /srv/unifi-os/var-lib-mongodb /srv/unifi-os/etc-rabbitmq-ssl; do
+         /srv/unifi-os/var-lib-mongodb /srv/unifi-os/etc-rabbitmq-ssl \
+         /srv/beszel/data /srv/beszel/agent /srv/beszel/socket /srv/.beszel; do
   if [[ ! -d "$d" ]]; then
     sudo mkdir -p "$d"
     sudo chown "$(id -u):$(id -g)" "$d"
@@ -169,6 +170,14 @@ for f in automations.yaml scripts.yaml scenes.yaml; do
   fi
   ok "home assistant include $f"
 done
+
+# /srv/.beszel is a marker, not a data directory, and it stays empty on
+# purpose. The Beszel agent charts the filesystems it can see from inside its
+# own namespace; mounting a directory that lives on /srv is what makes the
+# 984G data volume appear as its own disk instead of being invisible. Using an
+# empty hidden directory rather than /srv itself means the agent gets the
+# filesystem statistics without the photo library being mounted into it, even
+# read-only. See docs/beszel.md#the-second-disk.
 
 # Frigate refuses to start without a detector model, and the error in the log
 # is about a missing path rather than about the thing you forgot to do.

@@ -269,6 +269,27 @@ photos.{env.DOMAIN} {
 	# 	}
 	# }
 
+	# --- status.<domain> - Beszel -------------------------------------------
+	# The monitoring hub. 8090 serves the UI and the REST API on one listener
+	# and has no LAN guard of its own, so this block is the only thing keeping
+	# it off the internet once 443 is forwarded. It stays here permanently: a
+	# dashboard of what runs on this box, how full its disk is, and which
+	# containers exist is a map for anyone who finds it.
+	#
+	# The agent is NOT reachable through Caddy and never should be. The hub
+	# talks to it over a unix socket on a shared bind mount - there is no
+	# hostname to give it. See docs/beszel.md.
+	@beszel host status.{env.DOMAIN}
+	handle @beszel {
+		reverse_proxy beszel:8090 {
+			# Live stats arrive over a long-lived server-sent event stream.
+			# Caddy buffers those by default, which presents as a dashboard
+			# that loads correctly once and then never moves - the same
+			# symptom as the UniFi and Frigate blocks above.
+			flush_interval -1
+		}
+	}
+
 	# --- template: copy this block for each new app ------------------------
 	# @myapp host myapp.{env.DOMAIN}
 	# handle @myapp {

@@ -51,6 +51,15 @@ usage() {
 # bootstrap.sh check 6c fails if a stack directory has no case here.
 required_vars() {
   case "$1" in
+    # DOMAIN is duplicated from /caddy - deploy.sh reads one Infisical path
+    # per stack. KEY and TOKEN are minted by the hub itself, so they cannot
+    # exist before its first run: the hub is started once without this script,
+    # on purpose. See docs/beszel.md#first-deploy.
+    #
+    # Named KEY and TOKEN, not BESZEL_*, so that bootstrap.sh check 6d can
+    # match them against the agent's environment - it compares these names
+    # verbatim and skips what it cannot find.
+    beszel)        echo "DOMAIN KEY TOKEN" ;;
     caddy)         echo "CF_API_TOKEN ACME_EMAIL DOMAIN" ;;
     frigate)       echo "FRIGATE_RTSP_USER FRIGATE_RTSP_PASSWORD FRIGATE_MQTT_USER FRIGATE_MQTT_PASSWORD" ;;
     homeassistant) echo "" ;;   # no secrets - HA keeps its own in .storage
