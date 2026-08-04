@@ -73,20 +73,17 @@ fi
 # which is correct for a broker that only ever talks to two local clients.
 # frigate and homeassistant are also on `proxy`, so they keep their default
 # route through it and are unaffected.
-IOT_SUBNET="172.19.0.0/16"
-
+# The subnet is deliberately NOT pinned, unlike `proxy`. Pinning proxy is
+# load-bearing - IMMICH_TRUSTED_PROXIES and Home Assistant's trusted_proxies
+# both name that range literally. Nothing names this one, so pinning it bought
+# no safety and cost a collision: an earlier version asked for 172.19.0.0/16,
+# which one of the stacks' default networks already held, and Docker refuses
+# with "Pool overlaps with other one on this address space". Let Docker choose.
 if docker network inspect iot >/dev/null 2>&1; then
-  actual="$(docker network inspect iot -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}')"
-  if [[ "$actual" == "$IOT_SUBNET" ]]; then
-    ok "network 'iot' exists ($actual)"
-  else
-    # Harmless - nothing references this subnet by name the way Immich
-    # references proxy's. Reported only so drift is visible.
-    warn "network 'iot' is $actual, expected $IOT_SUBNET"
-  fi
+  ok "network 'iot' exists ($(docker network inspect iot -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}'))"
 else
-  docker network create --internal --subnet "$IOT_SUBNET" iot >/dev/null
-  ok "network 'iot' created ($IOT_SUBNET, internal)"
+  docker network create --internal iot >/dev/null
+  ok "network 'iot' created ($(docker network inspect iot -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}'), internal)"
 fi
 
 # --- 4. data directories ----------------------------------------------------
