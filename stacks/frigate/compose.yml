@@ -4,6 +4,9 @@ name: frigate
 #
 # Deploy:  ./scripts/deploy.sh frigate
 #
+# Required secrets are validated by deploy.sh, not by ${VAR:?} guards in this
+# file, so plain `docker compose down/logs/ps` works in this directory.
+#
 # Three rules specific to this stack:
 #
 #   1. It is LAN-only, permanently. Do not put it behind a public hostname.
@@ -71,10 +74,10 @@ services:
       # Any variable named FRIGATE_* can be referenced as {FRIGATE_*} inside
       # config.yml. That is how camera and broker credentials stay out of git.
       # All three are injected by scripts/deploy.sh from Infisical.
-      FRIGATE_RTSP_USER: ${FRIGATE_RTSP_USER:?not injected - deploy via scripts/deploy.sh}
-      FRIGATE_RTSP_PASSWORD: ${FRIGATE_RTSP_PASSWORD:?not injected - deploy via scripts/deploy.sh}
-      FRIGATE_MQTT_USER: ${FRIGATE_MQTT_USER:?not injected - deploy via scripts/deploy.sh}
-      FRIGATE_MQTT_PASSWORD: ${FRIGATE_MQTT_PASSWORD:?not injected - deploy via scripts/deploy.sh}
+      FRIGATE_RTSP_USER: ${FRIGATE_RTSP_USER}
+      FRIGATE_RTSP_PASSWORD: ${FRIGATE_RTSP_PASSWORD}
+      FRIGATE_MQTT_USER: ${FRIGATE_MQTT_USER}
+      FRIGATE_MQTT_PASSWORD: ${FRIGATE_MQTT_PASSWORD}
 
       # `capabilities: [gpu]` below resolves to compute+utility only. NVDEC -
       # the hardware video decoder ffmpeg uses for the camera streams - lives

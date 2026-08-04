@@ -4,6 +4,9 @@ name: mosquitto
 #
 # Deploy:  ./scripts/deploy.sh mosquitto
 #
+# Required secrets are validated by deploy.sh, not by ${VAR:?} guards in this
+# file, so plain `docker compose down/logs/ps` works in this directory.
+#
 # Deploy this BEFORE frigate and homeassistant. Both retry a missing broker
 # forever rather than failing, so the symptom of getting the order wrong is
 # not an error - it is Home Assistant showing no cameras and nobody knowing why.
@@ -73,8 +76,8 @@ services:
         exec mosquitto -c /mosquitto/config/mosquitto.conf
 
     environment:
-      MQTT_USER: ${MQTT_USER:?not injected - deploy via scripts/deploy.sh}
-      MQTT_PASSWORD: ${MQTT_PASSWORD:?not injected - deploy via scripts/deploy.sh}
+      MQTT_USER: ${MQTT_USER}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
       TZ: ${TZ:-America/Chicago}
 
     volumes:

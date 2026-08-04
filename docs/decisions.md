@@ -382,6 +382,112 @@ ability to reason about `docker volume ls` at all.
 stray-port check — the point of a convention is that something notices when it
 breaks.
 
+## Required variables are checked in deploy.sh
+
+Every stack that takes a secret used to declare it in its compose file as a
+required-variable guard:
+
+```yaml
+MONGO_PASS: ${MONGO_PASS:?not injected - deploy via scripts/deploy.sh}
+```
+
+That reads like exactly the right thing to do. It is not, because **compose
+parses the entire file for every subcommand, not just `up`.** The guard fires on
+`down`, on `logs`, on `ps` — none of which would ever use the value:
+
+```
+$ cd stacks/unifi && docker compose down
+required variable MONGO_PASS is missing a value
+```
+
+The error names a variable, so it reads as though the *command* was typed wrong
+rather than run without an environment. Nothing in it suggests "you meant to run
+this through Infisical." It cost an evening on the UniFi stack, where it arrived
+alongside an unrelated routing problem and made both look like one fault.
+
+Six of the seven stacks had it — caddy, frigate, immich, mosquitto, unifi, and
+infisical. It was never a UniFi problem; UniFi was just the first stack anyone
+happened to run `down` on.
+
+The guards are now gone from the compose files. `scripts/deploy.sh` carries a
+`required_vars()` table instead, checked after Infisical injects and before
+compose runs. Same fail-fast deploy, better message, and plain
+`docker compose down` works in a stack directory again.
+
+### What this gives up, stated properly
+
+A hand-typed `docker compose up -d` in a stack directory no longer refuses. It
+starts the containers with empty secrets. That is a real regression and it is
+the price of the trade, so it is worth being exact about how bad it is.
+
+**Every stack here fails closed, not open.** Checked one by one:
+
+| stack | blank secret does what |
+|---|---|
+| unifi | mongo refuses to initialise without a root password — container exits |
+| immich | Postgres rejects an empty `POSTGRES_PASSWORD` |
+| caddy | no Cloudflare token, so the DNS-01 challenge fails; no certificate |
+| frigate | cameras and the broker both reject the credentials; no streams |
+| mosquitto | `passwd` is regenerated with junk. It does **not** fall back to anonymous |
+
+The result of the mistake is a **broken** stack, not an **exposed** one. That is
+the difference between an afternoon and an incident, and it is why the trade is
+acceptable — but it is not nothing, and the reason it is written down here is
+that it was originally buried in one clause of a multiple-choice option rather
+than said out loud.
+
+**The one sharp edge:** mosquitto's entrypoint runs `rm -f /mosquitto/config/passwd`
+before regenerating it. A mistaken plain `up` on that stack therefore takes the
+broker down, and Frigate and Home Assistant notifications with it, until it is
+redeployed properly. Nothing is lost permanently — the file is derived from
+Infisical on every deploy — but it is the only stack where the blast radius
+reaches other stacks.
+
+**The compensating control** is `bootstrap.sh` check 6d, which inspects running
+containers and warns on any required variable that is present and empty. This
+repo already prefers detection to prevention for the stray-port and
+anonymous-volume conventions; this is the same shape. Prevention was traded for
+usable plain compose, so the check is what earns that back.
+
+### The thing that was true the whole time
+
+`docker restart unifi` never needed any of this. It acts on the container, does
+not parse the compose file, and never wanted a secret — before or after this
+change. Every container in this repo has an explicit `container_name`, so the
+routine "reload something" case has always been available and was never broken.
+What was broken was `docker compose restart`, which parses the file like every
+other subcommand.
+
+Reach for `docker restart <name>` / `docker stop <name>` for lifecycle,
+`scripts/deploy.sh <stack>` to apply a change, and compose subcommands only when
+you actually mean the stack as a unit.
+
+### Why not just keep the guards and always use scripts/compose.sh
+
+Because that version has the same shape of failure as the one it was meant to
+prevent, one level up: with guards in the compose files, **stopping a stack
+requires Infisical to be reachable.** `scripts/compose.sh unifi down` runs
+`infisical run`, so if Infisical is the thing that has broken, nothing can be
+cleanly brought down. A dependency that only bites during a failure is exactly
+the kind this repo tries not to accumulate.
+
+**`stacks/infisical` keeps its guards**, and should. It is the one stack
+`deploy.sh` cannot handle — it holds the secrets, so it cannot fetch its own —
+and it reads a plain `.env` in its own directory. Compose auto-loads that file
+for *every* subcommand, so the guards there only fire when the `.env` is
+genuinely missing. Which is the behaviour you want.
+
+`scripts/compose.sh` survives the change but shrinks: it is now only for the few
+commands that need real values (`config`, a one-off `run`), not for routine
+`down`/`logs`/`ps`.
+
+`bootstrap.sh` check 6c catches both directions of drift — a guard creeping back
+into a compose file, and a new stack with no entry in `required_vars()`, which
+would otherwise deploy with no check at all. Check 6d catches the consequence of
+the trade: a container actually running on an empty secret. It reads the same
+`required_vars()` table through `deploy.sh --required-vars`, so there is one
+copy of the list and not two.
+
 ## Still open
 - **A backup for Home Assistant's data directory.** HA Container has no backup
   UI, and `/srv/homeassistant/config/.storage` holds every credential HA has.

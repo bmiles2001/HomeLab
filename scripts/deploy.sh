@@ -6,6 +6,17 @@
 #   ./scripts/deploy.sh immich
 #   ./scripts/deploy.sh immich --dry-run     # print resolved config, change nothing
 #
+# Required secrets are checked HERE, in required_vars() below, and not by
+# `${VAR:?}` guards inside the compose files. Compose parses the whole file for
+# every subcommand, so guards in the file made `docker compose down` - and
+# `logs`, and `ps` - fail in a stack directory with "required variable X is
+# missing a value", which reads like the command needs an argument. Keeping the
+# check in the script keeps the fail-fast deploy and gives back plain compose.
+#
+# The tradeoff: `docker compose up -d` run by hand in a stack directory will now
+# start containers with blank secrets instead of refusing. Deploy through this
+# script. See docs/decisions.md#required-variables-are-checked-in-deploysh.
+#
 # Secrets arrive as environment variables and are interpolated by compose.
 # Nothing is written to disk, so there is no .env to leak, stale, or forget.
 #
@@ -30,6 +41,35 @@ usage() {
   echo "infisical is deployed with plain compose - see stacks/infisical/compose.yml"
   exit 1
 }
+
+# Every variable a stack cannot start correctly without. Values with a sensible
+# `${VAR:-default}` in the compose file do not belong here - only the ones where
+# an empty value is silently wrong, which in practice means the secrets.
+#
+# A stack with no secrets gets an explicit empty entry rather than being left
+# out, so that a missing case is a mistake rather than a blank cheque.
+# bootstrap.sh check 6c fails if a stack directory has no case here.
+required_vars() {
+  case "$1" in
+    caddy)         echo "CF_API_TOKEN ACME_EMAIL DOMAIN" ;;
+    frigate)       echo "FRIGATE_RTSP_USER FRIGATE_RTSP_PASSWORD FRIGATE_MQTT_USER FRIGATE_MQTT_PASSWORD" ;;
+    homeassistant) echo "" ;;   # no secrets - HA keeps its own in .storage
+    immich)        echo "DB_USERNAME DB_PASSWORD" ;;
+    mosquitto)     echo "MQTT_USER MQTT_PASSWORD" ;;
+    unifi)         echo "MONGO_PASS MONGO_INITDB_ROOT_PASSWORD" ;;
+    *)             echo "__NO_ENTRY__" ;;
+  esac
+}
+
+# bootstrap.sh reads the table above through this, rather than keeping a second
+# copy of it. Prints the list and exits; deploys nothing.
+if [[ "${1:-}" == "--required-vars" ]]; then
+  [[ -n "${2:-}" ]] || { echo "usage: $0 --required-vars <stack>" >&2; exit 1; }
+  out="$(required_vars "$2")"
+  [[ "$out" == "__NO_ENTRY__" ]] && exit 2
+  echo "$out"
+  exit 0
+fi
 
 STACK="${1:-}"
 [[ -z "$STACK" ]] && usage
@@ -70,24 +110,47 @@ if [[ -f "$STACK_DIR/.env" ]]; then
   exit 1
 fi
 
+DEPLOY_REQUIRED_VARS="$(required_vars "$STACK")"
+if [[ "$DEPLOY_REQUIRED_VARS" == "__NO_ENTRY__" ]]; then
+  echo "ERROR: stack '$STACK' has no case in required_vars() in this script." >&2
+  echo "Add one. An empty list is correct for a stack with no secrets." >&2
+  exit 1
+fi
+export DEPLOY_REQUIRED_VARS STACK INFISICAL_ENV
+
+# The check has to run inside `infisical run`, because that is the only process
+# that ever sees the values - they are never written to disk. `${!v}` is an
+# indirect expansion: the name is in $v, so this reads the variable it names.
+CHECK_VARS='
+  missing=()
+  for v in $DEPLOY_REQUIRED_VARS; do
+    [[ -n "${!v:-}" ]] || missing+=("$v")
+  done
+  if (( ${#missing[@]} )); then
+    echo "ERROR: infisical returned no value for: ${missing[*]}" >&2
+    echo "Looked in infisical:$INFISICAL_ENV at path /$STACK." >&2
+    echo "Either the key is missing there or the machine identity cannot read it." >&2
+    exit 1
+  fi
+'
+
 cd "$STACK_DIR"
 
 if $DRY_RUN; then
   echo "--- resolved config for '$STACK' (secrets redacted by compose) ---"
   exec infisical run --projectId="$INFISICAL_PROJECT_ID" \
-    --env="$INFISICAL_ENV" --path="/$STACK" -- docker compose config
+    --env="$INFISICAL_ENV" --path="/$STACK" -- \
+    bash -c "set -euo pipefail; $CHECK_VARS"' exec docker compose config'
 fi
 
 echo "deploying '$STACK' with secrets from infisical:$INFISICAL_ENV/$STACK"
 infisical run --projectId="$INFISICAL_PROJECT_ID" \
   --env="$INFISICAL_ENV" --path="/$STACK" -- \
-  docker compose up -d --remove-orphans "$@"
+  bash -c "set -euo pipefail; $CHECK_VARS"' exec docker compose "$@"' \
+  _ up -d --remove-orphans "$@"
 
-# `docker compose ps` parses compose.yml and therefore needs the same injected
-# variables the deploy did - it is not a plain container query. Run it outside
-# `infisical run` and it dies on `required variable DOMAIN is missing`, after a
-# deploy that already succeeded, and takes the script's exit code with it.
+# Plain compose from here on. With the guards out of the compose files this no
+# longer needs the injected environment - it was previously wrapped in
+# `infisical run` only so that parsing the file would not fail.
 echo
-infisical run --projectId="$INFISICAL_PROJECT_ID" \
-  --env="$INFISICAL_ENV" --path="/$STACK" -- \
-  docker compose ps
+docker compose ps

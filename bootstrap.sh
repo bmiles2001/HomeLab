@@ -188,6 +188,102 @@ else
   ok "no anonymous volumes"
 fi
 
+# --- 6c. required variables live in deploy.sh, not in the compose files ------
+# A `${VAR:?...}` guard inside a compose file looks like a safety feature and
+# behaves like a trap. Compose parses the entire file for every subcommand, so
+# the guard fires on `down`, `logs` and `ps` too - none of which would use the
+# value - and the error, "required variable MONGO_PASS is missing a value",
+# reads like the command was typed wrong rather than run without secrets.
+#
+# The convention: no guards in compose files. scripts/deploy.sh has a
+# required_vars() table instead, checked after injection and before `up`. That
+# keeps the fail-fast deploy while leaving plain compose usable in a stack
+# directory. See docs/decisions.md#required-variables-are-checked-in-deploysh.
+#
+# Two ways this drifts, both caught here: a guard creeping back into a compose
+# file, and a new stack with no case in required_vars(), which would deploy
+# with no check at all.
+#
+# stacks/infisical is exempt. It is the one stack deploy.sh cannot handle - it
+# holds the secrets, so it cannot fetch its own - and it reads a plain .env in
+# its own directory. Compose auto-loads that file for every subcommand, so its
+# guards fire only when the file is genuinely missing, which is the point.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+guard_drift=""
+table_drift=""
+for d in "$REPO_DIR"/stacks/*/; do
+  s="$(basename "$d")"
+  [[ "$s" == "infisical" ]] && continue
+  [[ -f "$d/compose.yml" ]] || continue
+  # Match a guard in an actual value, not the words ":?" inside a comment.
+  if grep -qE '^[^#]*\$\{[A-Za-z_][A-Za-z0-9_]*:\?' "$d/compose.yml"; then
+    guard_drift+="        $s"$'\n'
+  fi
+  grep -qE "^[[:space:]]*$s\)" "$REPO_DIR/scripts/deploy.sh" \
+    || table_drift+="        $s"$'\n'
+done
+if [[ -n "$guard_drift" ]]; then
+  warn "compose files still carrying \${VAR:?} guards - plain compose will fail there:"
+  printf '%s' "$guard_drift"
+  echo "        move them into required_vars() in scripts/deploy.sh"
+fi
+if [[ -n "$table_drift" ]]; then
+  warn "stacks with no case in required_vars() in scripts/deploy.sh:"
+  printf '%s' "$table_drift"
+  echo "        add one - an empty list is correct for a stack with no secrets"
+fi
+if [[ -z "$guard_drift$table_drift" ]]; then
+  ok "no compose guards; every stack has a required_vars() entry"
+fi
+
+# --- 6d. nothing running on a blank secret ----------------------------------
+# The compensating control for check 6c. Moving the required-variable check out
+# of the compose files and into deploy.sh means `docker compose up -d`, typed by
+# hand in a stack directory, no longer refuses - it starts the containers with
+# empty secrets. Prevention was traded for the ability to run plain compose, so
+# this is the detection that replaces it.
+#
+# It is not as bad as it sounds: every stack here fails CLOSED on a blank
+# credential rather than open. Mongo refuses to initialise, Postgres rejects an
+# empty password, Caddy cannot solve a DNS challenge, Frigate's cameras will not
+# connect, and mosquitto rewrites its passwd file rather than falling back to
+# anonymous. The result is a broken stack, not an exposed one.
+#
+# What it costs is time, because a stack that is broken for this reason looks
+# exactly like a stack that is broken for any other reason. This names it.
+#
+# Reads the required-variable table out of deploy.sh rather than keeping a
+# second copy - see `deploy.sh --required-vars`.
+#
+# A variable that is absent from a container is skipped, not flagged: the table
+# is per stack, and MONGO_INITDB_ROOT_PASSWORD belongs to unifi-db and not to
+# unifi. Only present-and-empty counts.
+blank_secrets=""
+for d in "$REPO_DIR"/stacks/*/; do
+  s="$(basename "$d")"
+  [[ "$s" == "infisical" ]] && continue
+  vars="$("$REPO_DIR/scripts/deploy.sh" --required-vars "$s" 2>/dev/null)" || continue
+  [[ -n "${vars// /}" ]] || continue
+  # `name:` at the top of each compose file is what compose labels containers
+  # with, so the project label and the directory name are the same string.
+  for cid in $(docker ps -q --filter "label=com.docker.compose.project=$s" 2>/dev/null); do
+    cname="$(docker inspect -f '{{.Name}}' "$cid" | sed 's|^/||')"
+    cenv="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$cid")"
+    for v in $vars; do
+      line="$(grep -m1 "^$v=" <<<"$cenv" || true)"
+      [[ -z "$line" ]] && continue          # not this service's variable
+      [[ "$line" == "$v=" ]] && blank_secrets+="        $cname: $v is empty"$'\n'
+    done
+  done
+done
+if [[ -n "$blank_secrets" ]]; then
+  warn "containers running with a required secret set to empty:"
+  printf '%s' "$blank_secrets"
+  echo "        started outside scripts/deploy.sh. Redeploy the stack to fix."
+else
+  ok "no container running on a blank secret"
+fi
+
 # --- 7. infisical cli -------------------------------------------------------
 if command -v infisical >/dev/null; then
   ok "infisical cli $(infisical --version 2>/dev/null | head -1)"

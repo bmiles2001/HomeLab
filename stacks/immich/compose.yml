@@ -6,6 +6,9 @@ name: immich
 #
 # Deploy:  ./scripts/deploy.sh immich
 #
+# Required secrets are validated by deploy.sh, not by ${VAR:?} guards in this
+# file, so plain `docker compose down/logs/ps` works in this directory.
+#
 # Two deliberate differences from upstream:
 #   1. No published ports. Caddy reaches immich-server over the `proxy`
 #      network by name, so nothing here listens on the LAN.
@@ -24,8 +27,8 @@ services:
       - /etc/localtime:/etc/localtime:ro
     environment:
       DB_HOSTNAME: ${DB_HOSTNAME:-database}
-      DB_USERNAME: ${DB_USERNAME:?not injected - deploy via scripts/deploy.sh}
-      DB_PASSWORD: ${DB_PASSWORD:?not injected - deploy via scripts/deploy.sh}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
       DB_DATABASE_NAME: ${DB_DATABASE_NAME:-immich}
       REDIS_HOSTNAME: ${REDIS_HOSTNAME:-redis}
       TZ: ${TZ:-America/Chicago}
@@ -108,8 +111,8 @@ services:
     image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${DB_USERNAME:?not injected - deploy via scripts/deploy.sh}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?not injected - deploy via scripts/deploy.sh}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_DATABASE_NAME:-immich}
       POSTGRES_INITDB_ARGS: "--data-checksums"
     volumes:

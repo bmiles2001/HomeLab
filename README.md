@@ -20,6 +20,8 @@ stacks/
   unifi/              the switch and access points. The one app publishing ports.
 scripts/
   deploy.sh           deploy a stack with secrets injected from Infisical
+  compose.sh          compose commands that need real secret values (config,
+                      one-off run). down/logs/ps work as plain compose.
   infisical-backup.sh nightly dump of the secrets database
   immich-onedrive-*   one-way mirror of the photo library to OneDrive
 docs/

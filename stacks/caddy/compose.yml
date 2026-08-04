@@ -5,6 +5,9 @@ name: caddy
 #
 # Deploy:  ./scripts/deploy.sh caddy
 #
+# Required secrets are validated by deploy.sh, not by ${VAR:?} guards in this
+# file, so plain `docker compose down/logs/ps` works in this directory.
+#
 # Ports 80/443 are privileged, and rootful Docker binds them without ceremony.
 #
 # Because Docker writes its iptables rules ahead of UFW's, these ports are
@@ -30,9 +33,9 @@ services:
     environment:
       # Injected by `infisical run` at deploy time; never written to disk.
       # The token needs Zone > DNS > Edit on your zone and nothing more.
-      CF_API_TOKEN: ${CF_API_TOKEN:?not injected - deploy via scripts/deploy.sh}
-      ACME_EMAIL: ${ACME_EMAIL:?not injected - deploy via scripts/deploy.sh}
-      DOMAIN: ${DOMAIN:?not injected - deploy via scripts/deploy.sh}
+      CF_API_TOKEN: ${CF_API_TOKEN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      DOMAIN: ${DOMAIN}
     extra_hosts:
       # Cockpit runs on the host, not in a container, so it cannot be reached
       # by container name like every other upstream. Docker maps this to the
