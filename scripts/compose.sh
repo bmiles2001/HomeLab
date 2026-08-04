@@ -4,7 +4,7 @@
 # injected, for the few commands that actually need them.
 #
 #   ./scripts/compose.sh caddy config          # resolved config, values filled in
-#   ./scripts/compose.sh unifi run --rm ...     # a one-off container that needs creds
+#   ./scripts/compose.sh immich run --rm ...    # a one-off container that needs creds
 #
 # WHEN YOU DO NOT NEED THIS
 #
@@ -36,8 +36,8 @@ usage() {
   echo "usage: $0 <stack> <compose command> [args...]"
   echo
   echo "examples:"
-  echo "  $0 unifi down"
-  echo "  $0 unifi logs -f"
+  echo "  $0 frigate down"
+  echo "  $0 frigate logs -f"
   echo "  $0 immich ps"
   echo
   echo "available stacks:"
@@ -57,7 +57,7 @@ STACK="${1:-}"
 shift
 [[ $# -eq 0 ]] && usage
 
-# `compose.sh down unifi` reads more naturally than `compose.sh unifi down` and
+# `compose.sh down frigate` reads more naturally than `compose.sh frigate down` and
 # is the wrong way round. Say so, rather than "no such stack: down".
 if [[ ! -d "$REPO_ROOT/stacks/$STACK" && -d "$REPO_ROOT/stacks/${1:-}" ]]; then
   echo "arguments are the other way round - the stack comes first:" >&2

@@ -8,10 +8,10 @@
 #   ./scripts/host-snapshot.sh after
 #   ./scripts/host-snapshot.sh diff
 #
-# Written for the UniFi OS Server install (docs/unifi-os-server.md), which
-# puts podman on a Docker box and wants ports Caddy may already hold. Nothing
-# here is UniFi-specific though - use it before any host change you might
-# want to reverse.
+# Written for a host install that wanted ports Caddy already held, and kept
+# after that was abandoned because nothing in it was specific to that job. Use
+# it before any host change you might want to reverse - a driver update, a
+# kernel upgrade, anything that installs a service of its own.
 #
 # Snapshots land in /srv/snapshots and are NOT in git: they contain this
 # machine's iptables rules and listening sockets, which is exactly the sort of
@@ -100,8 +100,9 @@ case "$MODE" in
     done
     echo
     if (( changed )); then
-      echo "Changes found. Read them against docs/unifi-os-server.md#what-counts-as-impact"
-      echo "before deciding whether this is expected or a rollback trigger."
+      echo "Changes found. Decide whether each one was expected before"
+      echo "continuing - an unexplained new listener or iptables rule is a"
+      echo "rollback trigger, not a curiosity."
     else
       echo "No differences. Nothing observable changed."
     fi

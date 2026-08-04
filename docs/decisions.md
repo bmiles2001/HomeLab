@@ -312,58 +312,6 @@ What follows from that: `/srv/homeassistant/config` is real state and needs a
 real backup, which it does not yet have. See
 [home-assistant.md](home-assistant.md#backups).
 
-## UniFi publishes ports, and has to
-
-**Retired.** True of the legacy Network Application, which is now parked. The
-controller in use is on macvlan with its own LAN address and publishes nothing
-— see [the macvlan section above](#and-it-gets-a-real-address-on-the-lan-via-macvlan).
-Kept because the reasoning is still correct for anyone running the container
-version, and because it is the argument that eventually produced the better
-answer.
-
-A real exception to [only Caddy publishes ports](#one-shared-proxy-network),
-and the first one a container has been granted.
-
-The UniFi Network Application is reached by two different kinds of client. A
-browser, which Caddy handles like any other app — the web UI on 8443 is not
-published and goes through `unifi.brent-miles.com` exactly like Frigate and
-Home Assistant. And the switch and access points, which do not speak HTTP to
-their controller at all: `8080/tcp` for the inform channel, `3478/udp` for
-STUN, `10001/udp` for discovery broadcasts. A reverse proxy carries none of
-those, and there is no configuration of Caddy that changes this.
-
-The alternatives were considered and are worse:
-
-- **`network_mode: host`** would work and is what a lot of guides suggest. It
-  also puts every port the application opens on the LAN, including 8443, and
-  takes the container off `proxy` so Caddy can no longer reach it by name. One
-  deliberate exception becomes a blanket one.
-- **A Cloud Key** removes the problem by buying hardware, which is the correct
-  answer for somebody who does not already have a server running.
-
-So: three device-facing ports, published, listed individually in the compose
-file with what breaks without each one. Two of them are bound to `10.0.0.4`
-rather than `0.0.0.0` so the interface is a decision. `10001/udp` is not,
-because devices announce themselves by broadcast and a socket bound to a
-unicast address never sees that traffic — a subtlety that would otherwise
-present as an empty Devices page with nothing in any log.
-
-`bootstrap.sh`'s stray-port check now carries an explicit allow-list rather
-than a special case buried in a regex. The point of that check is that a
-second publisher should be a decision someone made, and an allow-list is what
-a decision looks like in a script.
-
-**Where the line is:** the UI stays behind Caddy and stays LAN-only, for the
-same reason Frigate does. A network controller can reconfigure the network
-every other service in the house sits on. It is not a candidate for the public
-zone, now or later.
-
-**Consequence:** README rule 2 is no longer literally true and now reads as a
-rule with one named exception. That is worse than an absolute rule and better
-than a rule everybody knows is quietly violated.
-
-See [unifi.md](unifi.md).
-
 ## Every volume is named, including the empty ones
 
 A small convention with an annoying failure mode behind it.
@@ -376,10 +324,9 @@ recreates the container makes a new one and orphans the old. `docker volume ls`
 fills up with identical-looking entries that nobody can safely delete, because
 telling a live one from an orphan means inspecting every container.
 
-Two images here do this. `eclipse-mosquitto` declares `/mosquitto/log`, and
-`mongo` declares `/data/configdb`. Neither path is ever written to in this
-setup — mosquitto logs to stdout, and `/data/configdb` only holds state in a
-sharded cluster — so both mounts are permanently empty and both exist anyway.
+One image here does this: `eclipse-mosquitto` declares `/mosquitto/log`. The
+path is never written to in this setup — mosquitto logs to stdout — so the
+mount is permanently empty and exists anyway.
 
 The rule: **every volume on this box is named, and every name traces back to a
 compose file.** An empty named volume costs nothing. An anonymous one costs the
@@ -395,7 +342,7 @@ Every stack that takes a secret used to declare it in its compose file as a
 required-variable guard:
 
 ```yaml
-MONGO_PASS: ${MONGO_PASS:?not injected - deploy via scripts/deploy.sh}
+MQTT_PASSWORD: ${MQTT_PASSWORD:?not injected - deploy via scripts/deploy.sh}
 ```
 
 That reads like exactly the right thing to do. It is not, because **compose
@@ -403,18 +350,18 @@ parses the entire file for every subcommand, not just `up`.** The guard fires on
 `down`, on `logs`, on `ps` — none of which would ever use the value:
 
 ```
-$ cd stacks/unifi && docker compose down
-required variable MONGO_PASS is missing a value
+$ cd stacks/mosquitto && docker compose down
+required variable MQTT_PASSWORD is missing a value
 ```
 
 The error names a variable, so it reads as though the *command* was typed wrong
 rather than run without an environment. Nothing in it suggests "you meant to run
-this through Infisical." It cost an evening on the UniFi stack, where it arrived
-alongside an unrelated routing problem and made both look like one fault.
+this through Infisical." It cost an evening, because it arrived alongside an
+unrelated routing problem and made both look like one fault.
 
-Six of the seven stacks had it — caddy, frigate, immich, mosquitto, unifi, and
-infisical. It was never a UniFi problem; UniFi was just the first stack anyone
-happened to run `down` on.
+Every stack that took a secret had it. It was never a property of one stack —
+the first one anyone happened to run `down` on was simply the one that got
+blamed.
 
 The guards are now gone from the compose files. `scripts/deploy.sh` carries a
 `required_vars()` table instead, checked after Infisical injects and before
@@ -431,8 +378,8 @@ the price of the trade, so it is worth being exact about how bad it is.
 
 | stack | blank secret does what |
 |---|---|
-| unifi | mongo refuses to initialise without a root password — container exits |
 | immich | Postgres rejects an empty `POSTGRES_PASSWORD` |
+| beszel | the agent cannot authenticate to the hub; the system never goes green |
 | caddy | no Cloudflare token, so the DNS-01 challenge fails; no certificate |
 | frigate | cameras and the broker both reject the credentials; no streams |
 | mosquitto | `passwd` is regenerated with junk. It does **not** fall back to anonymous |
@@ -458,7 +405,7 @@ usable plain compose, so the check is what earns that back.
 
 ### The thing that was true the whole time
 
-`docker restart unifi` never needed any of this. It acts on the container, does
+`docker restart frigate` never needed any of this. It acts on the container, does
 not parse the compose file, and never wanted a secret — before or after this
 change. Every container in this repo has an explicit `container_name`, so the
 routine "reload something" case has always been available and was never broken.
@@ -473,7 +420,7 @@ you actually mean the stack as a unit.
 
 Because that version has the same shape of failure as the one it was meant to
 prevent, one level up: with guards in the compose files, **stopping a stack
-requires Infisical to be reachable.** `scripts/compose.sh unifi down` runs
+requires Infisical to be reachable.** `scripts/compose.sh frigate down` runs
 `infisical run`, so if Infisical is the thing that has broken, nothing can be
 cleanly brought down. A dependency that only bites during a failure is exactly
 the kind this repo tries not to accumulate.
@@ -498,8 +445,9 @@ copy of the list and not two.
 ## Single-file bind mounts need a recreate, not a reload
 
 Not a decision so much as a trap that this repo's own workflow walks into, found
-the hard way when `unifi.brent-miles.com` returned nothing while every container
-was up and healthy and Caddy could reach the upstream by name perfectly well.
+the hard way when a freshly added hostname returned nothing while every
+container was up and healthy and Caddy could reach the upstream by name
+perfectly well.
 
 Docker bind-mounts a **single file** by inode, not by path. Git does not edit
 files in place — it writes a new file and renames it over the old name, which
@@ -508,8 +456,8 @@ still bound to the file that existed when it started, and there is no
 indication anywhere that this has happened:
 
 ```
-grep -c unifi stacks/caddy/Caddyfile              # 5   - on the host
-docker exec caddy grep -c unifi /etc/caddy/Caddyfile  # 0   - in the container
+grep -c status stacks/caddy/Caddyfile              # 5   - on the host
+docker exec caddy grep -c status /etc/caddy/Caddyfile  # 0   - in the container
 ```
 
 `caddy reload` makes this worse rather than better. It re-reads the path, gets
@@ -522,7 +470,7 @@ the same inode (`$EDITOR`, `sed -i` without `--follow-symlinks`, `>>`) does
 show up immediately. It is specifically **replacement** that breaks the link,
 and replacement is what git, and most editors' atomic saves, do.
 
-Five files in this repo are mounted this way, and every one of them is
+Four files in this repo are mounted this way, and every one of them is
 somebody's source of truth:
 
 | File                                     | Container      |
@@ -531,7 +479,6 @@ somebody's source of truth:
 | `stacks/frigate/config.yml`              | `frigate`      |
 | `stacks/homeassistant/configuration.yaml` | `homeassistant` |
 | `stacks/mosquitto/mosquitto.conf`        | `mosquitto`    |
-| `stacks/unifi/init-mongo.sh`             | `unifi-db`     |
 
 **The rule: after a pull that touched any of those, recreate the container.**
 Not restart — restart keeps the same mounts. Recreate.
@@ -548,140 +495,6 @@ mount would hand its web UI a writable config again, which is exactly the drift
 [git is the source of truth](#git-is-the-source-of-truth-with-no-ui-allowed-to-compete)
 exists to prevent. A recreate is cheap; a config store that competes with the
 repo is not.
-
-## UniFi OS Server in a container, not on the host
-
-Supersedes the section below before it was ever carried out. The reasoning
-there for *why UniFi OS Server* still stands; the conclusion about *where it
-runs* does not.
-
-[github.com/lemker/unifi-os-server](https://github.com/lemker/unifi-os-server)
-extracts Ubiquiti's installer into an image. That removes every objection the
-host install raised — no podman on forge, no self-updating binary outside apt,
-no state outside the repo's description, and no fight over 443, because UniFi
-OS's portal stays on 443 *inside* the container where nothing else wants it.
-`deploy.sh` owns it like any other stack.
-
-Two costs replace the ones it removes, and they are different in kind.
-
-**No vendor support, by construction.** Ubiquiti say plainly this will not be a
-container. This image exists because someone unpacked their binary anyway. It
-works today; an upstream change can break it tomorrow with no fix until one
-maintainer gets to it. The mitigation is the tag pin and keeping
-`stacks/unifi/` parked as a way back — not confidence.
-
-**The privilege grant is the largest here.** `cgroup: host` plus
-`/sys/fs/cgroup:rw` plus `NET_ADMIN` and `NET_RAW`, because UniFi OS Server is
-systemd running MongoDB, RabbitMQ and the Network application as a service
-tree. Write access to the host cgroup hierarchy is a known escape primitive.
-
-That sits awkwardly beside the care taken elsewhere — Mosquitto confined to an
-internal network, Frigate's config mounted read-only against its own UI. The
-argument for accepting it is narrow and worth stating so it can be re-examined:
-**the alternative gave the same software the same access with no container
-boundary at all**, plus podman, plus self-updates. Containerised is strictly
-less bad than the host install, not good in isolation.
-
-It stays LAN-only permanently, same rule as Frigate. If the trade stops looking
-acceptable, the exit is a Cloud Key — hardware that does this job with no
-privileges on anything of ours.
-
-### And it gets a real address on the LAN, via macvlan
-
-Containerising alone would not have fixed discovery — a bridged controller sits
-behind NAT on `172.18.x.x` while the access points broadcast on `10.0.0.x`, and
-broadcasts do not survive DNAT. It could be talked to and could never find
-anything.
-
-So `bootstrap.sh` now creates a third network, `lan`: macvlan on the
-default-route NIC, allocating from `10.0.0.16/28`. The controller takes
-`10.0.0.20` and is genuinely on the house segment, with its own MAC.
-
-The pleasing consequence is that **this stack publishes no ports at all**, and
-[UniFi publishes ports, and has to](#unifi-publishes-ports-and-has-to) is
-retired. There is nothing to except: it does not borrow the host's ports
-because it has its own address. `bootstrap.sh`'s allow-list is back to `caddy`
-plus the parked legacy stack, and `unifi-os-server` appearing there again would
-now be a *signal that something broke*.
-
-Three things this costs, all documented in
-[unifi-os.md](unifi-os.md#discovery-and-macvlan):
-
-- **`10.0.0.16`–`10.0.0.31` must be excluded from the Orbi's DHCP pool.**
-  Docker allocates from that block knowing nothing about the router, and the
-  router leases from it knowing nothing about Docker. The collision is
-  intermittent and looks like the controller vanishing for no reason.
-- **forge itself cannot reach `10.0.0.20`.** The kernel does not bridge a
-  parent NIC to its own macvlan children. This is why the container stays on
-  `proxy` as well — Caddy is a container on that bridge, not a process on the
-  host, so it is unaffected. Drop `proxy` and the route dies.
-- **Every port the image opens is on the LAN**, since it is a real host there.
-  That is the honest trade for being one, and no worse than the appliance this
-  replaces.
-
-## UniFi OS Server runs on the host, on trial
-
-**Superseded — not carried out.** Kept because the analysis of what a host
-install costs is what made the container version obviously better, and because
-`scripts/host-snapshot.sh` came out of it and is worth having before any risky
-host change. See the section above.
-
-Reverses [UniFi publishes ports, and has to](#unifi-publishes-ports-and-has-to)
-in practice, though the reasoning there still stands for anyone running the
-container.
-
-The container was the right shape for this repo and the wrong shape for the
-job. A network controller needs to be on the same broadcast domain as the
-hardware it manages; ours sat on `172.18.x.x` while the access points
-broadcast on `10.0.0.x`. Published ports carry the unicast traffic — inform and
-STUN — but nothing carries discovery, so every adoption becomes a manual
-`set-inform` over SSH and nothing new ever appears by itself.
-
-Ubiquiti's answer to "will UniFi OS Server ship as a container" is the same
-observation from the other side: *"No. This is a complete solution that
-requires certain services to be run on the host to enable device discovery,
-adoption, and automatic system updates."*
-
-The second reason was cheaper to discover and more annoying: the legacy Network
-Server gates parts of first-run setup behind an online Ubiquiti account, and
-fails with a bare `403` on `/api/cmd/sitemgr` that is indistinguishable from a
-deployment bug. It was neither a MongoDB permission problem nor an egress
-problem, both of which were ruled out the slow way first.
-
-### Why this is a bigger exception than Cockpit
-
-[Cockpit](cockpit.md) was allowed in because it stores nothing: a view over
-systemd and LVM, rebuildable from `apt install` plus one file in this repo.
-UniFi OS Server fails that test four times over — it holds every adoption key
-and all site history, it is a binary from a download URL rather than an apt
-package, it updates itself through its own Update Manager, and it brings
-podman onto a box that deliberately moved to Docker.
-
-Each of those has a precedent here. Home Assistant already keeps real state
-outside git. Cockpit already runs on the host. Nothing yet does all of it at
-once, and nothing yet updates itself.
-
-### The trial, and how it ends
-
-Adopted **on trial**, with the exit conditions agreed in advance rather than
-argued about afterwards:
-
-1. **If it fails, that is acceptable.** Leave it broken, come back later.
-2. **If it damages the Docker infrastructure, roll back immediately.** Immich,
-   Frigate, Home Assistant, Infisical and Caddy worked before and must work
-   after.
-
-`scripts/host-snapshot.sh` exists so rule 2 is a diff rather than a judgement
-call — ports, containers, subnets, iptables and services, captured before and
-compared after. The rollback path is `stacks/unifi/`, which is parked rather
-than deleted for exactly this reason.
-
-The known collision is port 443, which Caddy holds and UniFi OS Server wants.
-Caddy keeps it by incumbency: if the installer cannot bind, that is rule 1 and
-costs nothing. Stopping Caddy first to make room would convert an acceptable
-failure into rule 2, self-inflicted.
-
-See [unifi-os-server.md](unifi-os-server.md).
 
 ## Beszel over Prometheus, and over nothing
 
@@ -711,7 +524,7 @@ for a house that runs Immich specifically to not be on someone else's server.
 
 ### Beszel's agent is on the host network
 
-The second exception to rule 2, and narrower than UniFi's.
+The only deviation from rule 2 on this box, and a narrow one.
 
 Network throughput is read from the host's interfaces. An agent on a bridge
 network reports the traffic across its own veth pair instead — a number that is
@@ -774,12 +587,6 @@ exists beats one that is written down. Drive health won.
 - **A backup for Home Assistant's data directory.** HA Container has no backup
   UI, and `/srv/homeassistant/config/.storage` holds every credential HA has.
   Nothing covers it today.
-- **An offsite copy of UniFi's `.unf` backups.** Same shape as the HA problem:
-  `/srv/unifi/config/data/backup` is the only thing that can rebuild the
-  controller, and it exists on one disk. See [unifi.md](unifi.md#backups).
-- **A backup for UniFi OS Server's state**, if the trial succeeds. It holds
-  every adoption key and all site history in podman volumes it owns, and
-  updates itself. Same shape as the Home Assistant gap above.
 - **A socket proxy in front of Beszel's agent** — now a two-part job, not one.
   Proxying the socket without also reverting the S.M.A.R.T. block changes
   nothing, because `SYS_ADMIN` and `/dev/nvme0` keep the container
@@ -787,15 +594,6 @@ exists beats one that is written down. Drive health won.
   read drive health. See [SMART is on](#smart-is-on-and-it-prices-the-socket-proxy-in).
 - **A backup for `/srv/beszel/data`.** It holds the alert rules, which are not
   in git — the same gap Home Assistant has.
-- **UniFi's MongoDB is pinned back to 7.0, and shouldn't stay there.** MongoDB
-  8.0+ refuses to start on Linux kernels 6.19 through 7.0.13 — a bundled
-  TCMalloc depending on rseq behaviour the kernel stopped providing. 7.0 is
-  unaffected and is a supported UniFi database, so it works, but it is an
-  older major sitting on a shorter support window for a reason that has
-  nothing to do with this repo. Kernel 7.0.14+ resolves it; the exit is a
-  kernel upgrade on forge and then the documented Mongo major-upgrade dance.
-  Care needed because the NVIDIA driver rebuilds via DKMS and Frigate depends
-  on it. See [unifi.md](unifi.md#mongodb-will-not-start-on-this-kernel).
 - **Immich transcoding on the now-idle iGPU.** Free performance, unclaimed.
 - **Backups.** The photo library will exist in exactly one place on one NVMe.
   `rclone` to OneDrive is the intended answer; until it runs, this is the

@@ -17,8 +17,8 @@ name: beszel
 #   beszel        the hub. Web UI and database. On `proxy`, publishes nothing,
 #                 reached by Caddy at status.<domain>. Ordinary app.
 #   beszel-agent  the collector. On the HOST network with a read-only docker
-#                 socket. The most privileged container here after unifi-os,
-#                 and the reasons are written out below rather than assumed.
+#                 socket. The most privileged container on this box, and the
+#                 reasons are written out below rather than assumed.
 
 services:
   beszel:

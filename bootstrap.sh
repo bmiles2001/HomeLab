@@ -86,71 +86,9 @@ else
   ok "network 'iot' created ($(docker network inspect iot -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}'), internal)"
 fi
 
-# --- 3c. the lan network (macvlan) ------------------------------------------
-# Gives a container a real address on the house LAN, with its own MAC, sharing
-# a broadcast domain with the hardware. Exactly one stack needs this: the UniFi
-# controller, which has to see access points' discovery broadcasts and cannot
-# from behind NAT. See docs/unifi-os.md#discovery-and-macvlan.
-#
-# Unlike `proxy` and `iot`, this network has no subnet of its own - it IS the
-# house subnet. Docker is told the range so it can allocate without colliding,
-# and `--ip-range` confines its choices to a small block that must be excluded
-# from the Orbi's DHCP pool. Everything outside that block stays the router's.
-#
-# THE PARENT INTERFACE MATTERS. macvlan attaches to a physical NIC; a wrong
-# guess produces a network that creates fine and carries nothing. Detected from
-# the default route, overridable for the day forge grows a second NIC:
-#   LAN_PARENT=enp5s0 ./bootstrap.sh
-LAN_SUBNET="${LAN_SUBNET:-10.0.0.0/24}"
-LAN_GATEWAY="${LAN_GATEWAY:-10.0.0.1}"
-LAN_IP_RANGE="${LAN_IP_RANGE:-10.0.0.16/28}"     # .16-.31, reserve these
-LAN_PARENT="${LAN_PARENT:-$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)}"
-
-if [[ -z "$LAN_PARENT" ]]; then
-  warn "cannot detect the default-route interface - skipping the 'lan' network"
-  echo "        LAN_PARENT=<nic> ./bootstrap.sh"
-elif ! ip link show "$LAN_PARENT" >/dev/null 2>&1; then
-  warn "LAN_PARENT='$LAN_PARENT' is not an interface on this box"
-elif docker network inspect lan >/dev/null 2>&1; then
-  actual_parent="$(docker network inspect lan -f '{{index .Options "parent"}}' 2>/dev/null)"
-  if [[ "$actual_parent" == "$LAN_PARENT" ]]; then
-    ok "network 'lan' exists (macvlan on $actual_parent)"
-  else
-    # Not fixable in place - macvlan options are set at creation time.
-    warn "network 'lan' is on '$actual_parent', expected '$LAN_PARENT'"
-    echo "        docker network rm lan && ./bootstrap.sh   (stops anything using it)"
-  fi
-else
-  docker network create -d macvlan \
-    --subnet "$LAN_SUBNET" \
-    --gateway "$LAN_GATEWAY" \
-    --ip-range "$LAN_IP_RANGE" \
-    -o parent="$LAN_PARENT" \
-    lan >/dev/null
-  ok "network 'lan' created (macvlan on $LAN_PARENT, allocating from $LAN_IP_RANGE)"
-  warn "reserve $LAN_IP_RANGE in the Orbi's DHCP settings if you have not"
-  echo "        the router does not know Docker is handing out these addresses"
-fi
-
-# macvlan needs the parent NIC to accept frames for MACs that are not its own.
-# Docker usually arranges this; when it does not, the symptom is a container
-# that looks perfectly configured and receives nothing at all.
-if [[ -n "${LAN_PARENT:-}" ]] && ip link show "$LAN_PARENT" >/dev/null 2>&1; then
-  if ip link show "$LAN_PARENT" | grep -q PROMISC; then
-    ok "$LAN_PARENT is in promiscuous mode"
-  else
-    warn "$LAN_PARENT is not in promiscuous mode - macvlan may receive nothing"
-    echo "        sudo ip link set $LAN_PARENT promisc on"
-  fi
-fi
-
 # --- 4. data directories ----------------------------------------------------
 for d in /srv/immich/data /srv/caddy /srv/infisical /srv/backups/infisical \
          /srv/frigate/media /srv/frigate/models /srv/homeassistant/config \
-         /srv/unifi/config \
-         /srv/unifi-os/persistent /srv/unifi-os/var-log /srv/unifi-os/data \
-         /srv/unifi-os/srv /srv/unifi-os/var-lib-unifi \
-         /srv/unifi-os/var-lib-mongodb /srv/unifi-os/etc-rabbitmq-ssl \
          /srv/beszel/data /srv/beszel/agent /srv/beszel/socket /srv/.beszel; do
   if [[ ! -d "$d" ]]; then
     sudo mkdir -p "$d"
@@ -214,20 +152,15 @@ fi
 # The architectural rule, checked rather than trusted. Apps join `proxy` and
 # are reached by container name; anything else with a host port is a mistake.
 #
-# `unifi` is the one allowed exception, and it is named here rather than
-# quietly tolerated: switches and APs speak raw UDP to the controller, so its
-# device-facing ports cannot go through Caddy. Its web UI still does. See
-# docs/decisions.md#unifi-publishes-ports-and-has-to.
+# There are no exceptions. There was one - a controller whose devices spoke raw
+# UDP that a reverse proxy cannot carry - and it is gone, so the allow-list is
+# back to the single name the rule always intended. Adding a second name here
+# is a decision to document in docs/decisions.md, not a quick fix.
 #
-# Note this only catches ports published on all interfaces. unifi's 8080 and
-# 3478 are bound to the LAN address specifically and never matched here in the
-# first place; 10001/udp is, and is what the allow-list is for.
-# `unifi` is the parked legacy stack, which publishes device-facing ports if it
-# is ever brought back. `unifi-os-server` is deliberately NOT here: on macvlan
-# it has its own LAN address and publishes nothing, so if it ever shows up in
-# this list something has gone wrong with the network and it has fallen back to
-# borrowing the host's ports.
-ALLOWED_PUBLISHERS='caddy|unifi'
+# Note this only catches ports published on all interfaces. A port deliberately
+# bound to the LAN address alone (`10.0.0.4:8554:8554`) never matches in the
+# first place, which is the documented way to expose something on purpose.
+ALLOWED_PUBLISHERS='caddy'
 strays=$(docker ps --format '{{.Names}}|{{.Ports}}' \
   | grep -E '0\.0\.0\.0:|:::' \
   | grep -vE "^($ALLOWED_PUBLISHERS)\|" | cut -d'|' -f1 || true)
@@ -246,9 +179,8 @@ fi
 # orphaned rather than reused, and `docker volume ls` slowly fills with
 # identical-looking garbage that nobody dares delete.
 #
-# Two were found this way: eclipse-mosquitto declares /mosquitto/log, and the
-# mongo image declares /data/configdb. Both are now mounted by name in their
-# compose files even though both stay empty.
+# Found this way: eclipse-mosquitto declares /mosquitto/log, which is now
+# mounted by name in its compose file even though it stays empty.
 #
 # The rule this enforces: every volume on this box is named, and every name
 # traces back to a compose file. If this warns, find which image declared it
@@ -267,7 +199,7 @@ fi
 # A `${VAR:?...}` guard inside a compose file looks like a safety feature and
 # behaves like a trap. Compose parses the entire file for every subcommand, so
 # the guard fires on `down`, `logs` and `ps` too - none of which would use the
-# value - and the error, "required variable MONGO_PASS is missing a value",
+# value - and the error, "required variable DB_PASSWORD is missing a value",
 # reads like the command was typed wrong rather than run without secrets.
 #
 # The convention: no guards in compose files. scripts/deploy.sh has a
@@ -319,10 +251,11 @@ fi
 # this is the detection that replaces it.
 #
 # It is not as bad as it sounds: every stack here fails CLOSED on a blank
-# credential rather than open. Mongo refuses to initialise, Postgres rejects an
-# empty password, Caddy cannot solve a DNS challenge, Frigate's cameras will not
-# connect, and mosquitto rewrites its passwd file rather than falling back to
-# anonymous. The result is a broken stack, not an exposed one.
+# credential rather than open. Postgres rejects an empty password, Caddy cannot
+# solve a DNS challenge, Frigate's cameras will not connect, Beszel's agent
+# cannot authenticate to its hub, and mosquitto rewrites its passwd file rather
+# than falling back to anonymous. The result is a broken stack, not an exposed
+# one.
 #
 # What it costs is time, because a stack that is broken for this reason looks
 # exactly like a stack that is broken for any other reason. This names it.
@@ -331,8 +264,9 @@ fi
 # second copy - see `deploy.sh --required-vars`.
 #
 # A variable that is absent from a container is skipped, not flagged: the table
-# is per stack, and MONGO_INITDB_ROOT_PASSWORD belongs to unifi-db and not to
-# unifi. Only present-and-empty counts.
+# is per stack but the variables are per service, and DB_PASSWORD belongs to
+# immich's database container and not to immich_server. Only present-and-empty
+# counts.
 blank_secrets=""
 for d in "$REPO_DIR"/stacks/*/; do
   s="$(basename "$d")"
@@ -361,7 +295,7 @@ fi
 
 # --- 6e. scripts are executable ---------------------------------------------
 # `scripts/compose.sh` was committed as 100644 and the failure was two removes
-# from the cause: `./scripts/compose.sh unifi down` gave "Permission denied",
+# from the cause: `./scripts/compose.sh immich down` gave "Permission denied",
 # and re-running it under sudo gave "sudo: cannot execute ...: Permission denied
 # (os error 13)", which reads like a sudo or ownership problem rather than a
 # missing +x. Git tracks the executable bit, so a file created without it stays
@@ -374,11 +308,10 @@ fi
 #
 # Scoped to things a human invokes: scripts/ and bootstrap.sh. Shell files
 # inside stacks/ are deliberately excluded, because "executable" means something
-# different there. stacks/unifi/init-mongo.sh is mounted into
-# /docker-entrypoint-initdb.d/, and mongo's entrypoint *sources* a .sh it finds
-# non-executable and *execs* one it finds executable. Sourced is what we want -
-# it inherits the entrypoint's environment. Flagging it here would invite a
-# +x that quietly changes how it runs.
+# different there - an init script mounted into a container's entrypoint
+# directory is often *sourced* when non-executable and *exec'd* when executable,
+# which are not the same thing. Flagging those here would invite a +x that
+# quietly changes how they run.
 nonexec=""
 while read -r mode _ _ path; do
   [[ "$path" == *.sh ]] || continue

@@ -65,10 +65,6 @@ required_vars() {
     homeassistant) echo "" ;;   # no secrets - HA keeps its own in .storage
     immich)        echo "DB_USERNAME DB_PASSWORD" ;;
     mosquitto)     echo "MQTT_USER MQTT_PASSWORD" ;;
-    unifi)         echo "MONGO_PASS MONGO_INITDB_ROOT_PASSWORD" ;;
-    # No secrets at all. UniFi OS Server keeps its own credentials inside
-    # /persistent, the same way Home Assistant does - see docs/unifi-os.md.
-    unifi-os)      echo "" ;;
     *)             echo "__NO_ENTRY__" ;;
   esac
 }

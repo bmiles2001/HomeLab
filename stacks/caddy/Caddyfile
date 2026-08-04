@@ -22,7 +22,7 @@
 # files by rename rather than rewriting them, so the container keeps pointing
 # at the inode it started with. Verify, then recreate if it lies to you:
 #
-#   docker exec caddy grep -c unifi /etc/caddy/Caddyfile   # 0 after a pull?
+#   docker exec caddy grep -c status /etc/caddy/Caddyfile  # 0 after a pull?
 #   ./scripts/deploy.sh caddy -- --force-recreate
 #
 # See docs/decisions.md#single-file-bind-mounts-need-a-recreate-not-a-reload.
@@ -203,72 +203,6 @@ photos.{env.DOMAIN} {
 		}
 	}
 
-	# --- unifi.<domain> - UniFi Network Application -------------------------
-	# The controller for the house switch and access points.
-	#
-	# `https://` upstream, unlike every other block in this file. The UniFi
-	# app terminates TLS itself on 8443 with a self-signed certificate and
-	# has no plaintext listener to point at instead. Verification is skipped
-	# for the same reason it is for Cockpit: there is no way to issue a
-	# trusted certificate for a name the container is never addressed by, and
-	# the hop is container-to-container on the proxy network.
-	#
-	# This is the UI only. Devices do not come through here - switches and APs
-	# talk to published host ports (8080/tcp inform, 3478/udp STUN) because
-	# they speak protocols a reverse proxy cannot carry. That is the exception
-	# in docs/decisions.md#unifi-publishes-ports-and-has-to, and it is why
-	# 8443 can stay unpublished while the stack still works.
-	#
-	# Must stay in the LAN-only block. A network controller is the same class
-	# of service as the NVR: everything it can do, it can do to the network
-	# the rest of the house is on.
-	# --- unifi.<domain> - UniFi OS Server -----------------------------------
-	# The controller for the house switch and access points, running in
-	# stacks/unifi-os. Upstream on 443 because UniFi OS serves its own portal
-	# there inside the container; the host-side 11443 mapping is for direct
-	# access during setup and is not used by this route.
-	#
-	# `https://` with verification off, same as Cockpit and the old unifi
-	# block: a self-signed certificate for a name the container is never
-	# addressed by cannot be made trusted, and the hop is container to
-	# container on the proxy network.
-	#
-	# Devices do not come through here. Switches and APs talk to published host
-	# ports (8080 inform, 3478/udp STUN, 10003/udp discovery) because a reverse
-	# proxy cannot carry those protocols.
-	#
-	# Stays in the LAN-only block, permanently. A network controller can
-	# reconfigure the network every other service in the house sits on.
-	@unifi host unifi.{env.DOMAIN}
-	handle @unifi {
-		reverse_proxy https://unifi-os-server:443 {
-			transport http {
-				tls_insecure_skip_verify
-			}
-			# Live client and device stats arrive over a WebSocket. Caddy
-			# upgrades it on its own but buffers by default, which presents as
-			# a dashboard that loads and then never updates.
-			flush_interval -1
-		}
-	}
-
-	# COMMENTED OUT: stacks/unifi (the legacy Network Application) is parked.
-	# Left here rather than deleted because uncommenting it - and commenting
-	# out the block above - is the rollback. See docs/unifi-os.md#rolling-back.
-	#
-	# @unifi-legacy host unifi.{env.DOMAIN}
-	# handle @unifi-legacy {
-	# 	reverse_proxy https://unifi:8443 {
-	# 		transport http {
-	# 			tls_insecure_skip_verify
-	# 		}
-	# 		# The dashboard's live client and device stats arrive over a
-	# 		# WebSocket. Caddy upgrades it on its own but buffers by default,
-	# 		# which shows up as a page that loads fine and then never updates.
-	# 		flush_interval -1
-	# 	}
-	# }
-
 	# --- status.<domain> - Beszel -------------------------------------------
 	# The monitoring hub. 8090 serves the UI and the REST API on one listener
 	# and has no LAN guard of its own, so this block is the only thing keeping
@@ -285,7 +219,7 @@ photos.{env.DOMAIN} {
 			# Live stats arrive over a long-lived server-sent event stream.
 			# Caddy buffers those by default, which presents as a dashboard
 			# that loads correctly once and then never moves - the same
-			# symptom as the UniFi and Frigate blocks above.
+			# symptom as the Frigate and Home Assistant blocks above.
 			flush_interval -1
 		}
 	}
