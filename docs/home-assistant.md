@@ -176,6 +176,116 @@ SQLite database does not appreciate being copied mid-write.
 
 ---
 
+## Getting rid of the play button
+
+HA's built-in camera cards show a static thumbnail with a play overlay and only
+start streaming when clicked. That is deliberate — otherwise every dashboard
+load starts a video stream per camera — but it feels clunky on a wall display.
+
+**The one-line fix**, no install required. Works on `picture-entity` and
+`picture-glance`:
+
+```yaml
+type: picture-entity
+entity: camera.bedroom
+camera_view: live      # <- default is "auto", which is the thumbnail + play button
+show_state: false
+show_name: false
+```
+
+This streams immediately, but still through HA's `stream` integration, which
+means HLS — typically 5–10 seconds behind real time and a second or two to
+start. Fine for a glance, poor for "who is at the door right now".
+
+**The proper fix** is the [Advanced Camera Card](https://github.com/dermotduffy/frigate-hass-card)
+(formerly the Frigate card), installed through HACS. It is built for this: live
+by default, no play button, and it can pull from go2rtc directly instead of
+going through HA's HLS pipeline, which takes latency from seconds to
+sub-second. It also gets you event browsing and a timeline in the same card.
+
+### The /security dashboard
+
+Create it at **Settings → Dashboards → + Add Dashboard → New dashboard from
+scratch**, title `Security`, URL `security`. Then open it, pencil icon →
+three-dot menu → **Raw configuration editor**, and paste:
+
+```yaml
+views:
+  - title: Cameras
+    path: cameras
+    # panel mode gives the card the whole viewport instead of a column
+    type: panel
+    cards:
+      - type: custom:advanced-camera-card
+        cameras:
+          - camera_entity: camera.bedroom
+            live_provider: go2rtc
+          - camera_entity: camera.garage
+            live_provider: go2rtc
+          - camera_entity: camera.street
+            live_provider: go2rtc
+        view:
+          # This is the setting that removes the play button.
+          default: live
+        dimensions:
+          aspect_ratio_mode: static
+          # All three cameras are 2048x1536. Without this the card letterboxes.
+          aspect_ratio: '4:3'
+```
+
+`live_provider: go2rtc` with a Frigate `camera_entity` needs no URL — the card
+reaches go2rtc through the Frigate integration. A `go2rtc.url` is only required
+for a go2rtc server that isn't Frigate's own, and would hit mixed-content
+blocking behind HTTPS.
+
+Confirm the entity IDs first in **Developer Tools → States**; the Frigate
+integration names them after the camera, but a rename would break the above
+silently.
+
+Single-camera versus grid is a menu button on the card, not config — the
+default is single with a camera carousel.
+
+### Keeping the dashboard in git
+
+The above lives in HA's `.storage`, outside this repo, like everything else HA
+owns. It can be pulled back in by declaring the dashboard in
+`configuration.yaml` and pointing it at a file in the repo:
+
+```yaml
+lovelace:
+  mode: storage      # leaves existing UI dashboards alone
+  dashboards:
+    security:
+      mode: yaml
+      title: Security
+      icon: mdi:cctv
+      show_in_sidebar: true
+      filename: security.yaml
+```
+
+`security.yaml` would then be mounted read-only from this repo alongside
+`configuration.yaml`. The cost is that the dashboard becomes read-only in the
+UI — every change goes through git. Worth it for a wall display that shouldn't
+change; annoying while still iterating on it.
+
+### Which stream to put on a dashboard
+
+Use the **sub** streams for any view showing more than one camera at a time,
+and Main only for single-camera views. Three 2048×1536 streams decoding
+continuously in a browser tab is what makes dashboards stutter, and continuous
+streaming removes the bandwidth saving that made smart streaming the default.
+
+### Why WebRTC is not set up here
+
+WebRTC is the lowest-latency option and the card supports it, but it needs the
+browser to reach Frigate on port 8555 directly, plus `webrtc.candidates` in the
+go2rtc config. That means publishing a port from the Frigate stack — which
+breaks [only Caddy publishes ports](../README.md#the-two-rules).
+
+MSE through go2rtc is close enough for a camera wall and costs nothing
+architecturally. If two-way talk ever becomes interesting, that is when this
+tradeoff is worth reopening — deliberately, and written down.
+
 ## When mosquitto restart-loops
 
 The broker generates its password file at startup from the injected secrets,
