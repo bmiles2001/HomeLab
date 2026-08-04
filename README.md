@@ -145,8 +145,34 @@ Four steps, no DNS record and no new certificate:
 1. `stacks/<app>/compose.yml` — join the `proxy` network, publish no ports.
 2. Put its secrets in Infisical under `/<app>`.
 3. Three lines in `stacks/caddy/Caddyfile` pointing at `container_name:port`.
-4. `./scripts/deploy.sh <app>` then
-   `docker exec caddy caddy reload --config /etc/caddy/Caddyfile`.
+4. `./scripts/deploy.sh <app>`, then **recreate Caddy** — not reload:
+   ```bash
+   ./scripts/deploy.sh caddy -- --force-recreate
+   ```
+
+**Why recreate rather than reload.** `compose.yml` bind-mounts a *single file*
+into the container, and the kernel resolves that to an inode when the container
+starts. `git pull` doesn't edit the Caddyfile in place — it writes a new file
+and renames it over the old one, which is a new inode. The running container
+keeps reading the old one.
+
+So `caddy reload` cheerfully re-reads a file that hasn't changed, reports
+success, and nothing happens. The symptom is a new hostname returning a closed
+connection while every existing route keeps working, because the request falls
+through to the catch-all `abort` at the bottom of the wildcard block.
+
+Confirm what the container can actually see before debugging anything else:
+
+```bash
+docker exec caddy grep -c "myapp" /etc/caddy/Caddyfile   # 0 means stale
+```
+
+`docker restart caddy` does **not** fix this — mounts are established at
+creation, not at start. `--force-recreate` is what's needed.
+
+`caddy reload` is still the right tool when you've edited the Caddyfile in
+place on the host, which is the case the two-rules section tells you not to do
+anyway.
 
 Routes point at container names rather than `10.0.0.4:PORT` because every
 stack joins one shared `proxy` network, where Docker's embedded DNS resolves

@@ -162,6 +162,14 @@ go2rtc:
       - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.64:554/streaming/channels/101
     bedroom_sub:
       - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.64:554/streaming/channels/102
+    garage:
+      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.62:554/cam/realmonitor?channel=1&subtype=0
+    garage_sub:
+      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.62:554/cam/realmonitor?channel=1&subtype=1
+    street:
+      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.60:554/cam/realmonitor?channel=1&subtype=0
+    street_sub:
+      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.60:554/cam/realmonitor?channel=1&subtype=1
 
 cameras:
   bedroom:
@@ -198,7 +206,30 @@ cameras:
     # zones:
     #   driveway:
     #     coordinates: 0,0,0,0,0,0
-
+  garage:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/garage_sub
+          input_args: preset-rtsp-restream
+          roles: [detect]
+        # Kept even with recording disabled: this is the stream the live view
+        # and Home Assistant's camera entity pull from.
+        - path: rtsp://127.0.0.1:8554/garage
+          input_args: preset-rtsp-restream
+          roles: [record]
+  street:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/street_sub
+          input_args: preset-rtsp-restream
+          roles: [detect]
+        # Kept even with recording disabled: this is the stream the live view
+        # and Home Assistant's camera entity pull from.
+        - path: rtsp://127.0.0.1:8554/street
+          input_args: preset-rtsp-restream
+          roles: [record]
 # Quoted, and it matters: YAML parses a bare 0.17 as a float, and Frigate
 # validates this field as a string - "Input should be a valid string", which
 # then drops it into safe mode with a CPU detector.
