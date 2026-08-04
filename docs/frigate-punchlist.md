@@ -84,8 +84,12 @@ echo "$MQTT_PW"   # you'll type this into HA by hand in step 8
 ## 3. Build the detector model
 
 **Frigate will not start without this.** The `-tensorrt` image ships no ONNX
-model. Ten to twenty minutes, almost all of it downloading PyTorch. Full
-explanation in [frigate.md](frigate.md#step-1-build-the-detector-model).
+model. Five to ten minutes. Full explanation in
+[frigate.md](frigate.md#step-1-build-the-detector-model).
+
+**Do not copy this from Frigate's docs** — their version doesn't pin PyTorch
+and fails with a segfault. The two extra lines are the fix; see
+[frigate.md](frigate.md#when-the-model-build-fails).
 
 ```bash
 docker build . --build-arg MODEL_SIZE=t --build-arg IMG_SIZE=320 --output . -f- <<'EOF'
@@ -95,6 +99,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.10.4 /uv /bin/
 WORKDIR /yolov9
 ADD https://github.com/WongKinYiu/yolov9.git .
 RUN uv pip install --system -r requirements.txt
+RUN uv pip install --system --index-url https://download.pytorch.org/whl/cpu \
+      torch==2.8.0 torchvision==0.23.0
 RUN uv pip install --system onnx==1.18.0 onnxruntime onnx-simplifier==0.4.* onnxscript
 ARG MODEL_SIZE
 ARG IMG_SIZE

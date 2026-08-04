@@ -81,6 +81,11 @@ Run this anywhere with Docker — it doesn't have to be `forge`, and it doesn't
 need a GPU. It builds a throwaway image, exports the model inside it, and drops
 the result in your current directory:
 
+**This is Frigate's published recipe with two lines added.** Do not copy the
+version straight from their docs — it does not pin PyTorch, and unpinned it now
+installs torch 2.13, which fails. Details in
+[when the build fails](#when-the-model-build-fails) below.
+
 ```bash
 docker build . --build-arg MODEL_SIZE=t --build-arg IMG_SIZE=320 --output . -f- <<'EOF'
 FROM python:3.11 AS build
@@ -89,6 +94,11 @@ COPY --from=ghcr.io/astral-sh/uv:0.10.4 /uv /bin/
 WORKDIR /yolov9
 ADD https://github.com/WongKinYiu/yolov9.git .
 RUN uv pip install --system -r requirements.txt
+# Pin torch, and take the CPU wheel. Both lines are additions to Frigate's
+# recipe. The pin is required; the CPU index just avoids a 2.5GB CUDA download
+# for an export that runs on the CPU anyway.
+RUN uv pip install --system --index-url https://download.pytorch.org/whl/cpu \
+      torch==2.8.0 torchvision==0.23.0
 RUN uv pip install --system onnx==1.18.0 onnxruntime onnx-simplifier==0.4.* onnxscript
 ARG MODEL_SIZE
 ARG IMG_SIZE
@@ -104,7 +114,7 @@ EOF
 sudo cp yolov9-t-320.onnx /srv/frigate/models/
 ```
 
-It takes ten to twenty minutes, almost all of it downloading PyTorch.
+Five to ten minutes with the CPU wheel.
 
 `MODEL_SIZE` and `IMG_SIZE` must match `model.width` / `model.height` in
 `config.yml` and the filename in `model.path`. If you change either build
@@ -117,7 +127,59 @@ RF-DETR get CUDA Graphs acceleration in 0.17. YOLO-NAS explicitly does not, and
 its pretrained weights carry a non-commercial licence besides.
 
 Back it up, or at least write down that this page exists. It's ~10MB and
-regenerating it is a twenty-minute errand you won't remember the shape of.
+regenerating it is an errand you won't remember the shape of.
+
+### When the model build fails
+
+This recipe is the most fragile thing in the whole setup — it pulls the tip of
+a research repo and builds it against whatever PyTorch resolves to today. It
+broke once already, on 2026-08-04, and will break again.
+
+**Symptom seen:** `ONNX: export failure`, `Failed to decompose the FX graph for
+ONNX compatibility`, then `Segmentation fault (core dumped)` and exit code 139.
+
+**Cause:** torch 2.9 made the dynamo-based exporter the default for
+`torch.onnx.export`. yolov9's `export.py` was written for the old TorchScript
+path and its graph doesn't survive the new one. Frigate's published recipe
+doesn't pin torch, so it silently picked up 2.13. Their *RF-DETR* recipe on the
+same docs page does pin `torch==2.8.0` — the yolov9 one just never got the same
+treatment.
+
+**Fix:** the `torch==2.8.0` pin above.
+
+If a future torch pin stops working, switch models rather than fighting it.
+RF-DETR is the better-maintained recipe — fully pinned, and CUDA Graph
+accelerated on NVIDIA just like yolov9:
+
+```bash
+docker build . --build-arg MODEL_SIZE=Nano --rm --output . -f- <<'EOF'
+FROM python:3.12 AS build
+RUN apt-get update && apt-get install --no-install-recommends -y libgl1 && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:0.10.4 /uv /bin/
+WORKDIR /rfdetr
+RUN uv pip install --system rfdetr[onnxexport] torch==2.8.0 onnx==1.19.1 transformers==4.57.6 onnxscript
+ARG MODEL_SIZE
+RUN python3 -c "from rfdetr import RFDETR${MODEL_SIZE}; x = RFDETR${MODEL_SIZE}(resolution=320); x.export(simplify=True)"
+FROM scratch
+ARG MODEL_SIZE
+COPY --from=build /rfdetr/output/inference_model.onnx /rfdetr-${MODEL_SIZE}.onnx
+EOF
+
+sudo cp rfdetr-Nano.onnx /srv/frigate/models/
+```
+
+Then swap the `model:` block in `config.yml` — note RF-DETR takes **no**
+`labelmap_path`:
+
+```yaml
+model:
+  path: /config/model_cache/rfdetr-Nano.onnx
+  model_type: rfdetr
+  width: 320
+  height: 320
+  input_tensor: nchw
+  input_dtype: float
+```
 
 ---
 
