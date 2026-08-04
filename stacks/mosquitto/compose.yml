@@ -30,27 +30,29 @@ services:
     # and the value came from Infisical rather than from disk. What lands on
     # the volume is the bcrypt hash, not the password.
     #
-    # $$ escapes the $ so compose passes it through to the shell rather than
-    # trying to interpolate it itself.
-    # Overriding the entrypoint skips the image's own startup script, which is
-    # what normally fixes ownership and drops privileges. Both therefore have
-    # to happen here: mosquitto_passwd writes the file 0600 root:root, and the
-    # broker - which drops to the `mosquitto` user per mosquitto.conf - then
-    # cannot read its own password file. The error is "Unable to open pwfile"
-    # and it looks like a config problem rather than a permissions one.
+    # Run the entrypoint as root so it can write into the config volume and
+    # chown the results. mosquitto.conf then has `user mosquitto`, which makes
+    # the broker itself drop privileges after binding - the same sequence the
+    # image's own entrypoint uses, which we replaced.
     #
-    # Only the two writable paths are chowned. /mosquitto/config/mosquitto.conf
-    # is a read-only bind mount, so a recursive chown over the directory fails
-    # and takes the whole chain down with it.
+    # Without this the first line fails with "Permission denied" writing the
+    # password file, `set -e` kills the script, and the container restart-loops
+    # with exit 1 before the broker is ever reached.
+    user: root
+
     # List form with a literal block scalar, deliberately. The string form of
     # `command:` is word-split by compose before the container sees it, which
-    # turns every quote and backslash in here into a guessing game. A list
-    # entrypoint is passed through untouched.
+    # turns every quote and backslash into a guessing game. A list entrypoint
+    # is passed through untouched.
     #
     # $$ escapes the $ so compose passes it to the shell rather than
     # interpolating it at deploy time - the value must be read inside the
     # container, not baked into the container's config where `docker inspect`
     # would show it.
+    #
+    # Only the two writable paths are chowned. /mosquitto/config/mosquitto.conf
+    # is a read-only bind mount, so a recursive chown over the directory fails
+    # and takes the whole chain down with it.
     entrypoint:
       - /bin/sh
       - -c
