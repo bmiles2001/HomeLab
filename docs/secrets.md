@@ -63,8 +63,15 @@ directory name in `stacks/`:
 
 ```
 /caddy      CF_API_TOKEN, DOMAIN, ACME_EMAIL
-/immich     DB_PASSWORD, DB_USERNAME, TZ, IMMICH_VERSION
+/immich     DB_PASSWORD, DB_USERNAME, TZ, IMMICH_VERSION,
+            IMMICH_ALLOW_SETUP, IMMICH_TRUSTED_PROXIES
+/ddns       CF_DDNS_TOKEN, DOMAIN, TZ
 ```
+
+`/ddns` holds a **second, separate** Cloudflare token rather than reusing
+`/caddy`'s. The permissions are identical, so this buys nothing against a
+determined attacker — it buys blast radius when *you* revoke one at 11pm.
+Rotating the DDNS token shouldn't be able to stop certificate renewal.
 
 Each stack's `.env.example` documents exactly which keys it expects. Those
 files are documentation now — never copy one to `.env`.
@@ -143,14 +150,27 @@ sudo systemd-run --on-calendar=daily --unit=infisical-backup \
 
 Test a restore once. A backup you haven't restored from is a hypothesis.
 
-## Rotating the Cloudflare token
+## Rotating the Cloudflare tokens
 
-Because it will need rotating, and the point of all this is that it takes 30
-seconds:
+There are two of them now, and they rotate independently. That's the point.
 
-1. Revoke and recreate at <https://dash.cloudflare.com/profile/api-tokens>,
-   scoped to Zone > DNS > Edit on one zone.
-2. Update `CF_API_TOKEN` in Infisical under `/caddy`.
-3. `./scripts/deploy.sh caddy`
+**Caddy's** (`/caddy` → `CF_API_TOKEN`) writes short-lived `_acme-challenge`
+TXT records for DNS-01 and deletes them again. Revoking it breaks certificate
+renewal, which you won't notice for up to 60 days.
+
+**DDNS's** (`/ddns` → `CF_DDNS_TOKEN`) writes the `photos` A record every few
+minutes. Revoking it breaks remote access the next time the WAN address
+changes.
+
+Either way, 30 seconds:
+
+1. Revoke and recreate at <https://dash.cloudflare.com/profile/api-tokens>
+   using the **Edit zone DNS** template, scoped to one zone.
+2. Update the relevant key in Infisical under `/caddy` or `/ddns`.
+3. `./scripts/deploy.sh caddy` or `./scripts/deploy.sh ddns`.
 
 No file edited, no commit, no chance of it ending up in git history.
+
+Cloudflare's newer tokens are prefixed and "scannable" (`cfut_`, `cfat_`).
+That's what broke the older Caddy images — see the note in
+`stacks/caddy/compose.yml` before assuming a new token is bad.

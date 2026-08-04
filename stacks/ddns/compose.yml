@@ -1,0 +1,65 @@
+name: ddns
+
+# Keeps the public A record for photos.<domain> pointed at this house.
+#
+# Deploy:  ./scripts/deploy.sh ddns
+#
+# Why this exists: the WAN address is dynamic. Every other name in this setup
+# resolves to 10.0.0.4 through the wildcard and never moves, so this stack
+# manages exactly one record and is deliberately blind to the rest.
+#
+# Why it isn't on the router: the RBR750's built-in dynamic DNS only speaks
+# NETGEAR's own service and No-IP. It cannot update Cloudflare.
+#
+# This is now a dependency of remote access. If it stops, the record goes stale
+# the next time the ISP hands out a new address and photos.<domain> points at
+# a stranger's connection until you notice. Check it the same way you check
+# the mirror timer - see docs/public-access.md.
+
+services:
+  cloudflare-ddns:
+    container_name: cloudflare_ddns
+    # Pin the major version. The `1` tag tracks 1.x and won't cross a breaking
+    # change; `latest` will, silently, on some Tuesday.
+    image: favonia/cloudflare-ddns:${DDNS_VERSION:-1}
+    restart: unless-stopped
+
+    # No published ports, no volumes, and not on the `proxy` network. It makes
+    # outbound HTTPS calls to Cloudflare and nothing ever talks to it.
+    security_opt:
+      - no-new-privileges:true
+
+    environment:
+      # A SEPARATE token from Caddy's, even though the permissions are
+      # identical (Zone > DNS > Edit, plus the Zone > Read that Cloudflare's
+      # "Edit zone DNS" template includes and which this needs to look the zone
+      # up from the hostname). Separate so that revoking one doesn't take TLS
+      # renewal down with it - see docs/secrets.md.
+      CLOUDFLARE_API_TOKEN: ${CF_DDNS_TOKEN:?not injected - deploy via scripts/deploy.sh}
+
+      # Exactly one name.
+      #
+      # Do NOT add `*.${DOMAIN}` here. The wildcard has to keep pointing at
+      # 10.0.0.4 or the LAN-only block in the Caddyfile stops being reachable
+      # the way it expects, every internal hostname starts hairpinning through
+      # the router, and cameras.<domain> begins resolving publicly - which is
+      # precisely the thing decisions.md says will never happen.
+      DOMAINS: photos.${DOMAIN:?not injected - deploy via scripts/deploy.sh}
+
+      # Grey cloud. Flip to true only when Cloudflare's proxy is turned on, and
+      # read the note about bulk media in docs/public-access.md first.
+      PROXIED: "false"
+
+      # IPv4 only, deliberately. If the ISP ever hands out IPv6 and it gets
+      # enabled on the Orbi, an AAAA record would open a second path into the
+      # house that bypasses every assumption the v4 port-forward rules make -
+      # IPv6 has no NAT, so hosts are directly addressable and the firewall is
+      # the only thing in the way. Turn this on knowingly or not at all.
+      IP6_PROVIDER: none
+
+      TZ: ${TZ:-America/Chicago}
+
+    # The container logs its resolved configuration on startup. Read it after
+    # the first deploy rather than assuming - an env var it doesn't recognise
+    # is ignored quietly:
+    #   docker logs cloudflare_ddns

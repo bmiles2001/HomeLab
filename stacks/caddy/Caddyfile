@@ -1,13 +1,24 @@
 # Routing table for the whole house. This file is the source of truth for
 # which hostname reaches which container - nothing else, nowhere else.
 #
-# Adding an app is three lines: copy the template block at the bottom, point
-# it at CONTAINER_NAME:PORT, make sure that container joins the `proxy`
-# network, then reload without dropping a connection:
+# It is split into two zones, and the split is the most important thing here:
+#
+#   PUBLIC    photos.<domain>, and nothing else. Answers to the open internet
+#             once 443 is forwarded at the router.
+#   LAN-ONLY  the *.<domain> block. Every request is checked against the house
+#             subnets first and dropped if it came from anywhere else.
+#
+# A new app goes in the LAN-ONLY block unless exposing it was a deliberate
+# decision written down in docs/decisions.md. There is no middle setting, and
+# "I'll move it later" is how the cameras end up on the internet.
+#
+# Reload without dropping a connection:
 #
 #   docker exec caddy caddy reload --config /etc/caddy/Caddyfile
 #
-# No new DNS record and no new certificate - the wildcard already covers it.
+# LAN apps need no DNS record and no certificate - the wildcard covers both.
+# A public app needs its own A record and a DDNS entry; see
+# docs/public-access.md.
 
 {
 	email {env.ACME_EMAIL}
@@ -17,8 +28,9 @@
 	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
 }
 
-# One wildcard cert covers every subdomain. Issued over DNS-01, which is why
-# it works for LAN-only names the public internet can never reach.
+# One wildcard cert covers every subdomain, public and private alike. Issued
+# over DNS-01, which is why it works for LAN-only names the public internet can
+# never reach - and why forwarding 443 requires no certificate change at all.
 (cf_tls) {
 	tls {
 		dns cloudflare {env.CF_API_TOKEN}
@@ -26,13 +38,58 @@
 	}
 }
 
-*.{env.DOMAIN} {
+# =============================================================================
+# PUBLIC
+# =============================================================================
+
+# Immich. The only hostname in this file that answers to the open internet.
+#
+# An exact hostname beats the wildcard below no matter which order they appear
+# in - Caddy sorts site blocks by specificity, not by position in the file. So
+# requests for photos.<domain> land here and never reach the wildcard, which is
+# why the LAN guard down there doesn't lock out the internet.
+photos.{env.DOMAIN} {
 	import cf_tls
 
-	# Refuse anything that isn't on the LAN. Uncomment once you've confirmed
-	# your subnet - cheap defence in depth, not a substitute for one.
-	# @notlocal not remote_ip 10.0.0.0/8 192.168.0.0/16 127.0.0.1/32
-	# abort @notlocal
+	# Its own log file, kept apart from LAN traffic. CrowdSec will parse this
+	# one and only this one. Mixing internet requests together with someone on
+	# the couch loading Frigate makes every scenario noisier and every alert
+	# less meaningful. Deeper history than the LAN log for the same reason -
+	# you will want to look back after an incident, not before one.
+	log {
+		output file /var/log/caddy/photos-access.log {
+			roll_size 10MiB
+			roll_keep 20
+		}
+	}
+
+	# No request body limit is set: Caddy has none by default, which is what
+	# iPhone video uploads need. Do not add `request_body max_size` here.
+	reverse_proxy immich_server:2283 {
+		# Caddy sets X-Forwarded-For, -Proto and -Host by itself, but not
+		# X-Real-IP, which Immich's reverse proxy docs ask for.
+		header_up X-Real-IP {remote_host}
+
+		# Overwrite, not append. Caddy's default is to append the connecting
+		# address to whatever X-Forwarded-For already arrived - and once this
+		# is public, forged ones will arrive. Replacing the header outright
+		# means Immich sees exactly one address and it is the one that
+		# actually opened the connection.
+		#
+		# This is correct only while Caddy is the true edge. If Cloudflare's
+		# proxy ever goes in front (orange cloud), revisit immediately: Caddy
+		# would then be throwing away the real client IP that Cloudflare put
+		# in the header and replacing it with Cloudflare's own.
+		header_up X-Forwarded-For {remote_host}
+	}
+}
+
+# =============================================================================
+# LAN-ONLY
+# =============================================================================
+
+*.{env.DOMAIN} {
+	import cf_tls
 
 	log {
 		output file /var/log/caddy/access.log {
@@ -41,16 +98,27 @@
 		}
 	}
 
-	# --- photos.<domain> - Immich -----------------------------------------
-	# Resolved by Docker's embedded DNS on the `proxy` network. Container IPs
-	# change on restart and this keeps working, which is the whole point of the
-	# shared network over published ports.
+	# The guard, and the reason this file is split in two.
 	#
-	# No request body limit is set: Caddy has none by default, which is what
-	# iPhone video uploads need. Do not add `request_body max_size` here.
-	@immich host photos.{env.DOMAIN}
-	handle @immich {
-		reverse_proxy immich_server:2283
+	# Written as the first `handle` rather than a bare `abort` on purpose:
+	# `handle` blocks are mutually exclusive and evaluated in the order they
+	# appear here, so this is guaranteed to run before any route below it. A
+	# top-level `abort @notlocal` would instead be positioned by Caddy's
+	# directive-ordering rules, which is a subtle thing to get wrong in a
+	# block whose entire job is to not be bypassed.
+	#
+	# Non-LAN requests get a closed connection, not a 403 - a 403 confirms the
+	# hostname exists and is worth coming back to.
+	#
+	# Tighten 10.0.0.0/8 to 10.0.0.0/24 once you've confirmed the Orbi hands
+	# out nothing outside it (guest network, satellite backhaul).
+	#
+	# 172.16.0.0/12 is deliberately absent. That is Docker's own range, and
+	# including it would let any container on the proxy network reach these
+	# hostnames. A request from a container is not a request from the LAN.
+	@notlocal not remote_ip 10.0.0.0/8 192.168.0.0/16 127.0.0.1/32
+	handle @notlocal {
+		abort
 	}
 
 	# --- secrets.<domain> - Infisical --------------------------------------
@@ -60,9 +128,9 @@
 	}
 
 	# --- cameras.<domain> - Frigate ----------------------------------------
-	# LAN-ONLY, permanently. When 443 is forwarded for Immich, this block must
-	# be behind the @notlocal guard above or removed entirely. A camera NVR is
-	# the last thing that should answer to the open internet.
+	# LAN-only, permanently - see docs/decisions.md. This block used to carry
+	# a warning that it had to be guarded before 443 was ever forwarded. It now
+	# is: the @notlocal handle above runs first and there is no path past it.
 	@frigate host cameras.{env.DOMAIN}
 	handle @frigate {
 		reverse_proxy frigate:8971

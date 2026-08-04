@@ -31,7 +31,32 @@ services:
       TZ: ${TZ:-America/Chicago}
       # Defaults to true so a fresh install can create its first admin. Flip it
       # to false in Infisical right after you register - see docs/immich-deploy.md.
+      # This is a hard prerequisite for forwarding 443: Immich hands admin to
+      # whoever loads the site first, and "first" stops meaning "you" the
+      # moment the port is open.
       IMMICH_ALLOW_SETUP: ${IMMICH_ALLOW_SETUP:-true}
+
+      # Immich is Express underneath, and Express's `trust proxy` is off by
+      # default. Without this, req.ip is whatever socket connected - which is
+      # always Caddy, on the proxy network, identical for every request on
+      # earth. The login rate limiter buckets by that address, so one attacker
+      # would either lock out the whole family or, at a limit high enough to
+      # avoid that, face no meaningful limit at all. Audit logs and sessions
+      # would show 172.x for everyone, too.
+      #
+      # A CIDR rather than an address, because container IPs change on restart.
+      # This is the `proxy` network's subnet, confirmed on forge and now pinned
+      # in bootstrap.sh so a rebuild can't quietly hand it a different range:
+      #   docker network inspect proxy -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+      #
+      # If those two ever disagree, this silently stops working - nothing
+      # errors, the rate limiter just goes back to seeing one address for the
+      # whole internet. bootstrap.sh warns about the mismatch for that reason.
+      #
+      # Verify rather than assume: fail a login from a phone on cellular and
+      # check the logged address is the carrier's, not 172.x. This setting has
+      # silently no-opped in some releases (immich-app/immich#14886).
+      IMMICH_TRUSTED_PROXIES: ${IMMICH_TRUSTED_PROXIES:-172.18.0.0/16}
     depends_on:
       - redis
       - database

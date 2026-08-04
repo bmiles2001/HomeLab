@@ -13,8 +13,9 @@ bootstrap.sh          run once on a fresh machine - network, dirs, sanity checks
 stacks/
   infisical/          secrets store. The only stack with a real .env file.
   caddy/              reverse proxy. The only stack that publishes ports.
-  immich/             photo server
+  immich/             photo server. The only stack with a public hostname.
   frigate/            camera NVR. LAN-only, permanently.
+  ddns/               keeps the photos A record pointed at this house
 scripts/
   deploy.sh           deploy a stack with secrets injected from Infisical
   infisical-backup.sh nightly dump of the secrets database
@@ -27,14 +28,19 @@ docs/
   frigate.md                 GPU split, storage budget, why it stays off the internet
   secrets.md                 Infisical setup and the daily workflow
   remote-access.md           editing from your main PC
+  public-access.md           forwarding 443, DDNS, and what stays private
   decisions.md               why this is shaped the way it is
 home-server-build-plan.md    hardware, BIOS, storage, GPU, everything non-container
 ```
 
 Nothing is reachable from the internet **yet**. Ports 80/443 stay closed on the
-router; DNS points at a private address that only resolves usefully from
-inside the house. Opening 443 for `photos.brent-miles.com` is planned and has
-its own prerequisites — see [docs/decisions.md](docs/decisions.md).
+router.
+
+The configuration for opening 443 is now in place and deployable — Caddy has a
+public block for `photos.brent-miles.com` and a LAN-guarded block for
+everything else — but the router hasn't been touched, so nothing is exposed.
+The ordered cutover, and the checks that prove the guard works, are in
+[docs/public-access.md](docs/public-access.md).
 
 ---
 
@@ -82,14 +88,21 @@ issued over DNS-01. Watch it with `docker logs -f caddy`.
 
 ## Cloudflare
 
-One wildcard A record, and you never touch the dashboard again:
+Two A records. One you set by hand and never touch again; one a container
+keeps current:
 
-| Type | Name | Content      | Proxy status              |
-| ---- | ---- | ------------ | ------------------------- |
-| A    | `*`  | `10.0.0.4` | **DNS only** (grey cloud) |
+| Type | Name     | Content    | Proxy status              | Managed by      |
+| ---- | -------- | ---------- | ------------------------- | --------------- |
+| A    | `*`      | `10.0.0.4` | **DNS only** (grey cloud) | you, once       |
+| A    | `photos` | WAN IP     | **DNS only** (grey cloud) | `stacks/ddns`   |
 
-It must be grey-clouded. Cloudflare cannot proxy to a private address, and
-orange-clouding it produces a confusing 522.
+A more specific record beats a wildcard, so `photos` overrides `*` without the
+wildcard needing to know. **The wildcard must stay at `10.0.0.4`** — pointing
+it at the WAN address would make every internal hostname resolve publicly,
+including the cameras.
+
+Both must be grey-clouded. Cloudflare cannot proxy to a private address, and
+orange-clouding the wildcard produces a confusing 522.
 
 **Tradeoff:** this publishes `10.0.0.4` to anyone who queries your DNS. It's
 an unroutable address so it grants no access, but it does confirm you run
@@ -99,8 +112,10 @@ internal layout leaves the house, and the family gets ad blocking. Caddy still
 needs the Cloudflare token either way, because DNS-01 talks to Cloudflare
 directly.
 
-The API token is scoped to Zone > DNS > Edit on one zone. Caddy uses it only
-to write a short-lived `_acme-challenge` TXT record and delete it again.
+There are two API tokens, both scoped to Zone > DNS > Edit on one zone. Caddy
+uses its own only to write a short-lived `_acme-challenge` TXT record and
+delete it again; the DDNS updater has a separate one so that revoking either
+can't take the other down. See [docs/secrets.md](docs/secrets.md#rotating-the-cloudflare-tokens).
 
 ---
 
@@ -235,9 +250,15 @@ Watch it with `du -sh /srv/immich/data/*` occasionally.
 
 ## Deliberately not done yet
 
-- **Public access to `photos.brent-miles.com`.** Decided but not built: forward
-  443 to Caddy, CrowdSec on the Caddy logs, Immich the only public hostname.
-  Immich ships no brute-force protection of its own, so that's the proxy's job.
+- **Forwarding 443.** The config is built and the docs are written; the router
+  rule isn't in place. See [docs/public-access.md](docs/public-access.md) for
+  the ordered cutover — `IMMICH_ALLOW_SETUP=false` and a verified
+  `IMMICH_TRUSTED_PROXIES` are hard prerequisites, not polish.
+- **CrowdSec on the Caddy logs.** The public site already logs separately to
+  `photos-access.log` for exactly this. Blocked on a decision: the Caddy
+  bouncer needs an `xcaddy` build, which means owning a Dockerfile and giving
+  up the bump-the-tag upgrade path. Immich ships no brute-force protection of
+  its own, so until this exists the rate limiter is the only thing there.
 - **Tailscale**, for administration. Complementary to the above rather than an
   alternative — public 443 for Immich, Tailscale for everything that should
   never be public.

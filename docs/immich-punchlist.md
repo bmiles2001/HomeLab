@@ -222,8 +222,14 @@ only yours.
 
 What's left after this belongs to other sessions, in risk order:
 
-1. **Public 443** — forward the port, CrowdSec on Caddy's logs, and set
-   `IMMICH_TRUSTED_PROXIES` or Immich's rate limiting sees only Caddy's address.
-2. **Komodo** — the stated precondition (Immich working) is now met.
-3. **Frigate** — its stack exists in the repo but has never been deployed, and
+1. **Public 443** — now has its own document, [public-access.md](public-access.md),
+   and the config is written. The Caddyfile is split into a public block and a
+   LAN-guarded one, `stacks/ddns` keeps the record current, and
+   `IMMICH_TRUSTED_PROXIES` is wired up. What's left is the router rule and the
+   ordered checks. Note that **step 2 above is a prerequisite** — `IMMICH_ALLOW_SETUP`
+   must read `false` before the port opens.
+2. **CrowdSec** — separate from the above and deliberately not blocking it.
+   Needs a custom Caddy build; see the end of public-access.md.
+3. **Komodo** — the stated precondition (Immich working) is now met.
+4. **Frigate** — its stack exists in the repo but has never been deployed, and
    its image pin is unverified.

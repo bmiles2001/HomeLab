@@ -35,11 +35,30 @@ fi
 # --- 3. the shared proxy network -------------------------------------------
 # Created out of band and declared `external: true` in every stack, so no
 # single stack owns it and tearing one down cannot delete it.
+#
+# The subnet is pinned rather than left to Docker's address pool, because
+# IMMICH_TRUSTED_PROXIES has to name it exactly - and Immich's login rate
+# limiting silently stops working if the two disagree. Docker allocates from
+# 172.17.0.0/16 upward in creation order, so a rebuild that happens to create
+# networks in a different order would hand `proxy` a different range and
+# nothing would announce it.
+#
+# 172.18.0.0/16 is what this network already has; pinning it makes a future
+# rebuild match rather than drift. See docs/public-access.md.
+PROXY_SUBNET="172.18.0.0/16"
+
 if docker network inspect proxy >/dev/null 2>&1; then
-  ok "network 'proxy' exists"
+  actual="$(docker network inspect proxy -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}')"
+  if [[ "$actual" == "$PROXY_SUBNET" ]]; then
+    ok "network 'proxy' exists ($actual)"
+  else
+    # Not fatal - it works fine - but IMMICH_TRUSTED_PROXIES is now wrong.
+    warn "network 'proxy' is $actual, expected $PROXY_SUBNET"
+    warn "set IMMICH_TRUSTED_PROXIES=$actual in Infisical, or recreate the network"
+  fi
 else
-  docker network create proxy >/dev/null
-  ok "network 'proxy' created"
+  docker network create --subnet "$PROXY_SUBNET" proxy >/dev/null
+  ok "network 'proxy' created ($PROXY_SUBNET)"
 fi
 
 # --- 4. data directories ----------------------------------------------------
