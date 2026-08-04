@@ -209,9 +209,7 @@ cameras:
     # substream to 640x480 in the camera: Configuration > Video/Audio > Sub
     # Stream. If the firmware only offers 704x576, use that and put 704/576
     # here instead.
-    detect:
-      width: 640
-      height: 480
+
     # Which stream the Live UI plays, and in what order. The FIRST entry is
     # what the default "All Cameras" dashboard uses; the rest become a dropdown
     # in the single-camera view, remembered per browser.
