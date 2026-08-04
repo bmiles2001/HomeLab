@@ -218,6 +218,9 @@ cameras:
         - path: rtsp://127.0.0.1:8554/garage
           input_args: preset-rtsp-restream
           roles: [record]
+    detect:
+      width: 704
+      height: 480
   street:
     enabled: true
     ffmpeg:
@@ -230,6 +233,9 @@ cameras:
         - path: rtsp://127.0.0.1:8554/street
           input_args: preset-rtsp-restream
           roles: [record]
+    detect:
+      width: 704
+      height: 480
 # Quoted, and it matters: YAML parses a bare 0.17 as a float, and Frigate
 # validates this field as a string - "Input should be a valid string", which
 # then drops it into safe mode with a CPU detector.
