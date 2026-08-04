@@ -199,4 +199,7 @@ cameras:
     #   driveway:
     #     coordinates: 0,0,0,0,0,0
 
-version: 0.17
+# Quoted, and it matters: YAML parses a bare 0.17 as a float, and Frigate
+# validates this field as a string - "Input should be a valid string", which
+# then drops it into safe mode with a CPU detector.
+version: "0.17"
