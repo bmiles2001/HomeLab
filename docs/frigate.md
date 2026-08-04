@@ -292,6 +292,99 @@ your shell history.
 
 ---
 
+## Live view is slow to start
+
+Frigate picks between three streaming technologies and silently falls back down
+the list. Understanding which one you're getting explains most complaints.
+
+| | Quality | Needs |
+|---|---|---|
+| **MSE** | native resolution and frame rate | go2rtc. The default here. |
+| **WebRTC** | native, lowest latency | port 8555 reachable + candidates configured. Not set up. |
+| **jsmpeg** | 720p, capped at `detect fps`, no audio | nothing. The fallback. |
+
+If the UI says **"low bandwidth mode"**, MSE failed or timed out and you're on
+jsmpeg. Causes, in the order worth checking:
+
+1. **I-frame interval longer than the frame rate.** This is the big one.
+   Frigate's docs are explicit: "values higher than the frame rate will cause
+   the stream to take longer to begin playback," because the player waits for a
+   keyframe before it can show anything. Set it equal to the fps on **every**
+   camera and **both** streams — Hikvision calls it *I Frame Interval*, Dahua
+   calls it *I Frame Interval* too, Reolink calls it *Interframe Space 1x*.
+2. **Too many high-resolution streams at once.** Three 2048×1536 streams
+   decoding simultaneously will beat the buffering timeout on most browsers, and
+   Frigate would rather show you jsmpeg quickly than MSE eventually. This is the
+   direct cost of setting Main first in `live -> streams`.
+3. **An audio codec MSE can't play.** MSE needs AAC or PCMA/PCMU. If a camera
+   emits G.726 or similar, playback dies. Set the camera to AAC, or have go2rtc
+   transcode:
+   ```yaml
+   go2rtc:
+     streams:
+       garage:
+         - "ffmpeg:rtsp://...#video=copy#audio=aac"
+   ```
+   If a camera has no microphone at all, tell go2rtc so explicitly with
+   `#video=copy` — a stream advertising absent audio also breaks MSE.
+4. **Smart streaming, which is not a fault.** The default "All Cameras"
+   dashboard shows a *static image* refreshed once a minute until motion is
+   detected, then switches to live. That delay is deliberate bandwidth saving,
+   not a stall.
+
+### Main stream when viewing, substream on the wall
+
+`live -> streams` sets what the Live UI plays. The first entry is what the
+default dashboard uses; the others appear as a dropdown on the single-camera
+view and are remembered per browser.
+
+Main is listed first here, so opening a camera gives full resolution. To keep
+the multi-camera dashboard fast, **build a camera group** in the UI
+(Settings → Camera Groups) and set its stream to Sub. Group settings are
+per-device, so phones can use Sub while the desktop uses Main.
+
+### Aspect ratio mismatches
+
+Keep the `detect` stream's *aspect ratio* the same as the live stream's — the
+resolution doesn't need to match, only the ratio. Otherwise the dashboard image
+visibly changes size when it switches from the static detect image to the live
+stream, and jsmpeg draws a diagonal line down the right edge with colour
+artifacts.
+
+Frigate's docs suggest nudging `detect` to the nearest standard ratio
+(640×352 → 640×360). Treat that as a last resort, and read the next section
+first — it does not apply to D1.
+
+### D1 substreams and the non-square-pixel trap
+
+The two Dahuas offer only D1 (704×480) or CIF (352×240) for the substream. CIF
+is far too small, so D1 is the only real choice — and it looks like it has the
+wrong aspect ratio, at 1.467:1 against a 4:3 main stream.
+
+**It doesn't.** D1 is an NTSC holdover that uses *non-square pixels*: 704×480
+samples displayed as 4:3. The substream genuinely does frame the same scene as
+the main stream. Browsers assume square pixels, so they draw it stretched.
+
+This matters because the obvious fix is wrong. `detect.width`/`height` must be
+what the camera actually **sends**, because Frigate reads raw frames of exactly
+`width × height × 1.5` bytes off the ffmpeg pipe. Declare 640×480 against a
+704×480 stream and every frame is read misaligned — which produces the skewed
+image with a diagonal edge that the "wrong aspect ratio" advice was trying to
+cure in the first place. You would be causing the bug you're trying to fix.
+
+So: leave `detect` at 704×480, and treat the stretch as the display issue it
+is, in this order:
+
+1. **Fix the I-frame interval first.** The diagonal-line artifact is a *jsmpeg*
+   rendering problem, and jsmpeg is only the fallback player. Get MSE working
+   and it stops mattering.
+2. If it still bothers you, enable **compatibility mode** in the camera group's
+   stream settings. It exists for exactly this case.
+3. Only then consider nudging the declared resolution, and expect it to trade
+   one artifact for another.
+
+---
+
 ## Networking, and why this is never public
 
 **Frigate is LAN-only, permanently.** It sits inside the `@notlocal` guard in

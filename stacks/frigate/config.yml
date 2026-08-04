@@ -200,6 +200,19 @@ cameras:
     detect:
       width: 640
       height: 480
+    # Which stream the Live UI plays, and in what order. The FIRST entry is
+    # what the default "All Cameras" dashboard uses; the rest become a dropdown
+    # in the single-camera view, remembered per browser.
+    #
+    # Main first, because full resolution is what you want when you actually
+    # look at a camera. Be aware of the tradeoff: three 2048x1536 streams
+    # decoding at once is what makes a dashboard slow to start and fall back to
+    # "low bandwidth mode". Use a camera group set to Sub for the wall view -
+    # see docs/frigate.md#live-view-is-slow-to-start.
+    live:
+      streams:
+        Main: bedroom
+        Sub: bedroom_sub
     # Draw these in the UI, then paste the coordinates back here. Without
     # zones, a camera facing the street will alert on every passing car - and
     # a motion detector that cries wolf gets muted and then ignored.
@@ -218,9 +231,29 @@ cameras:
         - path: rtsp://127.0.0.1:8554/garage
           input_args: preset-rtsp-restream
           roles: [record]
+    # Main stream measured 2026-08-04: H.264H 2048x1536 @ 20fps (4:3).
+    # Substream: D1 704x480. The firmware offers only D1 or CIF (352x240), and
+    # CIF is far too small to detect anything, so D1 it is.
+    #
+    # These numbers must be what the camera actually SENDS. Frigate reads raw
+    # frames of exactly width x height x 1.5 bytes off the ffmpeg pipe; lie to
+    # it and every frame is read misaligned, which is the skewed image with a
+    # diagonal edge that people usually blame on the player.
+    #
+    # D1 is 704x480 samples but 4:3 on screen - it uses non-square pixels, a
+    # holdover from NTSC. So the substream does frame the same scene as the
+    # main stream; browsers just assume square pixels and draw it stretched.
+    # That is a display problem, not a detection one, and the fix is the
+    # "compatibility mode" toggle in the camera group's stream settings - NOT
+    # inventing a resolution here. See docs/frigate.md#d1-substreams-and-the-
+    # non-square-pixel-trap
     detect:
       width: 704
       height: 480
+    live:
+      streams:
+        Main: garage
+        Sub: garage_sub
   street:
     enabled: true
     ffmpeg:
@@ -233,9 +266,14 @@ cameras:
         - path: rtsp://127.0.0.1:8554/street
           input_args: preset-rtsp-restream
           roles: [record]
+    # Same model and same D1 substream as garage - see the note above.
     detect:
       width: 704
       height: 480
+    live:
+      streams:
+        Main: street
+        Sub: street_sub
 # Quoted, and it matters: YAML parses a bare 0.17 as a float, and Frigate
 # validates this field as a string - "Input should be a valid string", which
 # then drops it into safe mode with a CPU detector.
