@@ -62,7 +62,7 @@ else
 fi
 
 # --- 4. data directories ----------------------------------------------------
-for d in /srv/immich/data /srv/caddy /srv/infisical /srv/backups/infisical /srv/frigate/media; do
+for d in /srv/immich/data /srv/caddy /srv/infisical /srv/backups/infisical; do
   if [[ ! -d "$d" ]]; then
     sudo mkdir -p "$d"
     sudo chown "$(id -u):$(id -g)" "$d"

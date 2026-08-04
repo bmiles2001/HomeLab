@@ -50,6 +50,21 @@ unsupported layers deep to debug at 11pm.
 
 Worth revisiting if the box ever moves to Linux.
 
+**Amendment, 2026-08-03 — now rejected outright, for a different reason.**
+The Docker-socket objection did die with the Linux pivot, so on that count Komodo
+became viable. It's still not being adopted: Komodo wants to own environment
+variables and secrets for the stacks it deploys, and that collides directly with
+`scripts/deploy.sh` injecting them from Infisical at deploy time. Running both
+means two systems believing they own the same values, with no error when they
+disagree — the same class of silent drift that ruled out Portainer's web editor,
+just relocated from config to credentials.
+
+Picking one would mean either giving Komodo the secrets (and demoting Infisical to
+a store nothing reads) or keeping Infisical and accepting that Komodo's deploy path
+can't be used — at which point it's a dashboard, not a deploy tool.
+
+Not on the "deliberately not done yet" list. Decided against.
+
 ### Podman Desktop for now, Dockge later
 
 Podman Desktop covers eyeballing containers. Dockge stores stacks as real

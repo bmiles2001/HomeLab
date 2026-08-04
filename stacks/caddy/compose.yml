@@ -33,6 +33,15 @@ services:
       CF_API_TOKEN: ${CF_API_TOKEN:?not injected - deploy via scripts/deploy.sh}
       ACME_EMAIL: ${ACME_EMAIL:?not injected - deploy via scripts/deploy.sh}
       DOMAIN: ${DOMAIN:?not injected - deploy via scripts/deploy.sh}
+    extra_hosts:
+      # Cockpit runs on the host, not in a container, so it cannot be reached
+      # by container name like every other upstream. Docker maps this to the
+      # proxy network's gateway (172.18.0.1, pinned in bootstrap.sh).
+      #
+      # `host-gateway` rather than a literal address so it survives a network
+      # rebuild that hands `proxy` a different subnet - the one failure pinning
+      # is meant to prevent but cannot guarantee.
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro,z
       - caddy_data:/data          # certificates and ACME account - do not lose

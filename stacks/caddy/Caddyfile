@@ -127,13 +127,28 @@ photos.{env.DOMAIN} {
 		reverse_proxy infisical_backend:8080
 	}
 
-	# --- cameras.<domain> - Frigate ----------------------------------------
-	# LAN-only, permanently - see docs/decisions.md. This block used to carry
-	# a warning that it had to be guarded before 443 was ever forwarded. It now
-	# is: the @notlocal handle above runs first and there is no path past it.
-	@frigate host cameras.{env.DOMAIN}
-	handle @frigate {
-		reverse_proxy frigate:8971
+	# --- cockpit.<domain> - Cockpit (host OS, not a container) --------------
+	# The only upstream in this file that is not a container. Cockpit is a
+	# systemd service on forge itself, so container-name resolution does not
+	# apply - `host.docker.internal` is mapped to the proxy network's gateway
+	# by the extra_hosts entry in compose.yml. Changing that entry needs a
+	# real deploy; `caddy reload` will not pick it up.
+	#
+	# Spoken to over HTTPS with verification off: cockpit-ws serves its own
+	# self-signed cert on 9090, and there is no way to give it a trusted one
+	# for a name it is never addressed by. The hop is host-local. The cert the
+	# browser sees is the wildcard this file already issues.
+	#
+	# Cockpit rejects WebSocket connections whose Origin it doesn't recognise,
+	# so /etc/cockpit/cockpit.conf on the host must list this hostname. That
+	# file is host state and is not in this repo - see docs/cockpit.md.
+	@cockpit host cockpit.{env.DOMAIN}
+	handle @cockpit {
+		reverse_proxy https://host.docker.internal:9090 {
+			transport http {
+				tls_insecure_skip_verify
+			}
+		}
 	}
 
 	# --- template: copy this block for each new app ------------------------

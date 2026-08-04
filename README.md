@@ -14,8 +14,6 @@ stacks/
   infisical/          secrets store. The only stack with a real .env file.
   caddy/              reverse proxy. The only stack that publishes ports.
   immich/             photo server. The only stack with a public hostname.
-  frigate/            camera NVR. LAN-only, permanently.
-  ddns/               keeps the photos A record pointed at this house
 scripts/
   deploy.sh           deploy a stack with secrets injected from Infisical
   infisical-backup.sh nightly dump of the secrets database
@@ -25,10 +23,11 @@ docs/
   immich-deploy.md           step-by-step: secrets, deploy, first login, iPhones
   onedrive-mirror.md         rclone setup, the headless auth dance, restoring
   photo-app-comparison.md    why Immich and not the others
-  frigate.md                 GPU split, storage budget, why it stays off the internet
   secrets.md                 Infisical setup and the daily workflow
   remote-access.md           editing from your main PC
   public-access.md           forwarding 443, DDNS, and what stays private
+  cockpit.md                 host management UI, routed through caddy
+  storage-expansion.md       LVM layout on the 2TB nvme, and what's left free
   decisions.md               why this is shaped the way it is
 home-server-build-plan.md    hardware, BIOS, storage, GPU, everything non-container
 ```
@@ -88,18 +87,23 @@ issued over DNS-01. Watch it with `docker logs -f caddy`.
 
 ## Cloudflare
 
-Two A records. One you set by hand and never touch again; one a container
-keeps current:
+One A record, set by hand and never touched again:
 
-| Type | Name     | Content    | Proxy status              | Managed by      |
-| ---- | -------- | ---------- | ------------------------- | --------------- |
-| A    | `*`      | `10.0.0.4` | **DNS only** (grey cloud) | you, once       |
-| A    | `photos` | WAN IP     | **DNS only** (grey cloud) | `stacks/ddns`   |
+| Type | Name | Content    | Proxy status              | Managed by |
+| ---- | ---- | ---------- | ------------------------- | ---------- |
+| A    | `*`  | `10.0.0.4` | **DNS only** (grey cloud) | you, once  |
 
-A more specific record beats a wildcard, so `photos` overrides `*` without the
-wildcard needing to know. **The wildcard must stay at `10.0.0.4`** — pointing
-it at the WAN address would make every internal hostname resolve publicly,
-including the cameras.
+That single wildcard covers every hostname and every certificate. Adding an app
+needs no DNS change at all.
+
+**The wildcard must stay at `10.0.0.4`** — pointing it at the WAN address would
+make every internal hostname resolve publicly.
+
+A second record (`photos`, pointed at the WAN IP and kept current by a DDNS
+updater) is required before anything is exposed to the internet. It comes back
+with the `ddns` stack when public access is actually taken up; a more specific
+record beats a wildcard, so it will override `*` without the wildcard needing to
+know. See [docs/public-access.md](docs/public-access.md).
 
 Both must be grey-clouded. Cloudflare cannot proxy to a private address, and
 orange-clouding the wildcard produces a confusing 522.
@@ -112,10 +116,11 @@ internal layout leaves the house, and the family gets ad blocking. Caddy still
 needs the Cloudflare token either way, because DNS-01 talks to Cloudflare
 directly.
 
-There are two API tokens, both scoped to Zone > DNS > Edit on one zone. Caddy
-uses its own only to write a short-lived `_acme-challenge` TXT record and
-delete it again; the DDNS updater has a separate one so that revoking either
-can't take the other down. See [docs/secrets.md](docs/secrets.md#rotating-the-cloudflare-tokens).
+One API token, scoped to Zone > DNS > Edit on one zone. Caddy uses it only to
+write a short-lived `_acme-challenge` TXT record and delete it again. When the
+DDNS updater returns it gets a **separate** token with the same scope, so that
+revoking either can't take the other down. See
+[docs/secrets.md](docs/secrets.md#rotating-the-cloudflare-tokens).
 
 ---
 
@@ -262,12 +267,15 @@ Watch it with `du -sh /srv/immich/data/*` occasionally.
 - **Tailscale**, for administration. Complementary to the above rather than an
   alternative — public 443 for Immich, Tailscale for everything that should
   never be public.
-- **Komodo**, for git-push→deploy. Ruled out under Podman-on-WSL because its
-  agent needs a real Docker socket; that objection died with the pivot. Immich
-  now works, so the stated precondition is met.
 - **A verified restore.** The mirror running is not the same as the mirror
   working. Until a database dump has been loaded into a throwaway Immich and an
   album confirmed present, the backup is a hypothesis — see
   [docs/onedrive-mirror.md](docs/onedrive-mirror.md) §8. Do it while the library
   is small.
 - **A family dashboard.** Homepage, when there are enough apps to warrant it.
+- **Frigate** (camera NVR) and **ddns**. Both were built and are in git history;
+  they were removed from the working tree to keep the repo describing only what
+  is actually running. Restore either with `git checkout <commit> -- stacks/<name>`.
+
+Komodo is no longer on this list — it is **rejected**, not deferred. See
+[docs/decisions.md](docs/decisions.md#komodo--rejected).
