@@ -171,9 +171,9 @@ go2rtc:
     #
     # The Dahuas don't need this and don't have it. Don't add it there.
     bedroom:
-      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.64:554/streaming/channels/101#backchannel=0
+      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.64:554/Streaming/Channels/1?transportmode=unicast&profile=Profile_1
     bedroom_sub:
-      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.64:554/streaming/channels/102#backchannel=0
+      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.64:554/Streaming/Channels/1?transportmode=unicast&profile=Profile_2
     garage:
       - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.62:554/cam/realmonitor?channel=1&subtype=0
     garage_sub:
