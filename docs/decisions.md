@@ -542,7 +542,55 @@ mount would hand its web UI a writable config again, which is exactly the drift
 exists to prevent. A recreate is cheap; a config store that competes with the
 repo is not.
 
+## UniFi OS Server in a container, not on the host
+
+Supersedes the section below before it was ever carried out. The reasoning
+there for *why UniFi OS Server* still stands; the conclusion about *where it
+runs* does not.
+
+[github.com/lemker/unifi-os-server](https://github.com/lemker/unifi-os-server)
+extracts Ubiquiti's installer into an image. That removes every objection the
+host install raised — no podman on forge, no self-updating binary outside apt,
+no state outside the repo's description, and no fight over 443, because UniFi
+OS's portal stays on 443 *inside* the container where nothing else wants it.
+`deploy.sh` owns it like any other stack.
+
+Two costs replace the ones it removes, and they are different in kind.
+
+**No vendor support, by construction.** Ubiquiti say plainly this will not be a
+container. This image exists because someone unpacked their binary anyway. It
+works today; an upstream change can break it tomorrow with no fix until one
+maintainer gets to it. The mitigation is the tag pin and keeping
+`stacks/unifi/` parked as a way back — not confidence.
+
+**The privilege grant is the largest here.** `cgroup: host` plus
+`/sys/fs/cgroup:rw` plus `NET_ADMIN` and `NET_RAW`, because UniFi OS Server is
+systemd running MongoDB, RabbitMQ and the Network application as a service
+tree. Write access to the host cgroup hierarchy is a known escape primitive.
+
+That sits awkwardly beside the care taken elsewhere — Mosquitto confined to an
+internal network, Frigate's config mounted read-only against its own UI. The
+argument for accepting it is narrow and worth stating so it can be re-examined:
+**the alternative gave the same software the same access with no container
+boundary at all**, plus podman, plus self-updates. Containerised is strictly
+less bad than the host install, not good in isolation.
+
+It stays LAN-only permanently, same rule as Frigate. If the trade stops looking
+acceptable, the exit is a Cloud Key — hardware that does this job with no
+privileges on anything of ours.
+
+What it does **not** solve is discovery. A bridge-networked container still
+cannot see the access points' broadcasts, so adoption is `set-inform` per
+device exactly as before. macvlan is the real fix and is written up in
+[unifi-os.md](unifi-os.md#if-discovery-matters), deliberately not done: four
+devices adopted once by hand beats a network type nobody here has debugged.
+
 ## UniFi OS Server runs on the host, on trial
+
+**Superseded — not carried out.** Kept because the analysis of what a host
+install costs is what made the container version obviously better, and because
+`scripts/host-snapshot.sh` came out of it and is worth having before any risky
+host change. See the section above.
 
 Reverses [UniFi publishes ports, and has to](#unifi-publishes-ports-and-has-to)
 in practice, though the reasoning there still stands for anyone running the

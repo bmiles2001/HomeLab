@@ -1,0 +1,143 @@
+name: unifi-os
+
+# UniFi OS Server, in Docker. The controller for the house switch and APs.
+#
+# Deploy:  ./scripts/deploy.sh unifi-os
+#
+# Replaces stacks/unifi/ (the legacy Network Application), which is parked.
+# It also replaces the plan to install UniFi OS Server on the host - see
+# docs/decisions.md#unifi-os-server-in-a-container-not-on-the-host.
+#
+# THREE THINGS TO UNDERSTAND BEFORE TOUCHING THIS FILE
+#
+# 1. This is a THIRD-PARTY REPACKAGING of a proprietary Ubiquiti binary.
+#    Ubiquiti ship UniFi OS Server as a host installer and say plainly that it
+#    will not be offered as a container. github.com/lemker/unifi-os-server
+#    extracts their binary into an image anyway. It works, but there is no
+#    vendor support, and an upstream change can break it with no warning and
+#    no fix until one maintainer gets to it. Pin the tag; read the release
+#    notes; keep stacks/unifi/ parked as the way back.
+#
+# 2. It runs systemd, and therefore wants the host's cgroup hierarchy
+#    read-write plus NET_ADMIN and NET_RAW. That is a much larger privilege
+#    grant than anything else in this repo, and it is the real price of this
+#    approach. See docs/unifi-os.md#what-this-container-can-do-to-the-host.
+#
+# 3. It does NOT fix device discovery on its own. A bridge-networked container
+#    still cannot see the access points' broadcasts. Adoption is by
+#    `set-inform`, exactly as it was before. macvlan is the fix and is written
+#    up in docs/unifi-os.md#if-discovery-matters - deliberately not done yet,
+#    because four devices adopted once by hand is cheaper than a new network
+#    type nobody has debugged.
+
+services:
+  unifi-os-server:
+    container_name: unifi-os-server
+    # Pinned rather than `latest`. This image is rebuilt whenever the
+    # maintainer re-extracts a new UniFi release, so `latest` means "whatever
+    # a stranger published this morning" - which is not a thing to point the
+    # house network at. Check the tag list before bumping:
+    #   https://github.com/lemker/unifi-os-server/pkgs/container/unifi-os-server
+    image: ghcr.io/lemker/unifi-os-server:${UNIFI_OS_VERSION:-latest}
+    restart: unless-stopped
+
+    # UniFi OS Server is not one process. It is systemd running a tree of
+    # services - the Network application, MongoDB, RabbitMQ - inside one
+    # container, which is why this needs the host's cgroup hierarchy rather
+    # than the private namespace Docker would normally give it.
+    #
+    # This is the single most privileged setting in this repo. Write access to
+    # the host cgroup hierarchy is a well-known escape primitive. It is
+    # accepted here only because this stack is LAN-only and the alternative
+    # was installing the same software directly on the host, where it would
+    # have had everything anyway.
+    cgroup: host
+    cap_add:
+      - NET_RAW      # STUN and discovery need raw sockets
+      - NET_ADMIN    # systemd-networkd inside the container
+
+    extra_hosts:
+      host.docker.internal: host-gateway
+
+    # systemd needs these writable and non-persistent. `exec` on /run and /tmp
+    # is required - the default `noexec` makes unit startup fail in ways that
+    # look like the application is broken rather than the mount.
+    tmpfs:
+      - /run:exec
+      - /run/lock
+      - /tmp:exec
+      - /var/lib/journal
+      - /var/opt/unifi/tmp:size=64m
+
+    environment:
+      # The address devices are told to report to. Written into each device's
+      # inform URL at adoption, so getting it wrong gives devices that adopt
+      # and then vanish - the same failure the legacy stack had, except this
+      # time it is declared here instead of clicked into a settings page.
+      #
+      # forge's LAN address, not the Caddy hostname: an access point resolving
+      # DNS is one more thing that can fail at 11pm. Devices reach 8080 here
+      # through the published port below.
+      UOS_SYSTEM_IP: ${LAN_IP:-10.0.0.4}
+
+    volumes:
+      # Required for systemd. Read-write, and yes, that is as broad as it reads.
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+      # All state, on real paths rather than named volumes. This is the only
+      # copy of every adoption key and all site history, and something outside
+      # the container has to be able to back it up - which nothing does yet.
+      # See docs/decisions.md#still-open.
+      - ${UNIFI_OS_ROOT:-/srv/unifi-os}/persistent:/persistent
+      - ${UNIFI_OS_ROOT:-/srv/unifi-os}/var-log:/var/log
+      - ${UNIFI_OS_ROOT:-/srv/unifi-os}/data:/data
+      - ${UNIFI_OS_ROOT:-/srv/unifi-os}/srv:/srv
+      - ${UNIFI_OS_ROOT:-/srv/unifi-os}/var-lib-unifi:/var/lib/unifi
+      - ${UNIFI_OS_ROOT:-/srv/unifi-os}/var-lib-mongodb:/var/lib/mongodb
+      - ${UNIFI_OS_ROOT:-/srv/unifi-os}/etc-rabbitmq-ssl:/etc/rabbitmq/ssl
+
+    ports:
+      # Device-facing, and bound to the LAN address so the interface is a
+      # decision. Same exception to README rule 2 the legacy stack had, for
+      # the same reason: switches and APs speak raw protocols a reverse proxy
+      # cannot carry. docs/decisions.md#unifi-publishes-ports-and-has-to.
+      #
+      # 8080/tcp  - inform. Devices post state and receive config.
+      - "${LAN_IP:-10.0.0.4}:8080:8080"
+      # 3478/udp  - STUN. Without it devices adopt and then flap.
+      - "${LAN_IP:-10.0.0.4}:3478:3478/udp"
+
+      # 10003/udp - discovery. NOTE THE PORT CHANGED: the legacy Network
+      # Application used 10001. Not bound to a single address, because devices
+      # announce by broadcast and a socket bound to 10.0.0.4 never sees
+      # traffic addressed to the subnet broadcast.
+      - "10003:10003/udp"
+
+      # The web UI, on the LAN as well as through Caddy. Unusual for this repo,
+      # and temporary-ish: the legacy stack's first-run wizard failed through
+      # the reverse proxy with a bare 403, and being able to reach the console
+      # directly at https://10.0.0.4:11443 is what makes that debuggable
+      # rather than mysterious. Remove this line once setup is complete and
+      # unifi.brent-miles.com is proven.
+      #
+      # 11443 on the host because 443 inside the container is UniFi OS's own
+      # portal - the port collision that made the host install unattractive
+      # exists here too, it is just contained.
+      - "${LAN_IP:-10.0.0.4}:11443:443"
+
+      # Deliberately NOT published - no hotspot, no guest portal, no VoIP:
+      #   5005 RTP  9543 Identity Hub  6789 speed test  8444 secure portal
+      #   5514 syslog  5671 AMQPS  8880/8881/8882 hotspot redirects
+      # Add one only with a reason, and put the reason here.
+
+    networks:
+      - proxy    # caddy reaches the console at unifi-os-server:443
+
+    # No healthcheck. The image ships none, and a naive check against 443
+    # would report healthy while the Network application inside is still
+    # starting - worse than no signal. `docker logs unifi-os-server` and the
+    # console itself are the honest checks.
+
+networks:
+  proxy:
+    external: true

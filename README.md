@@ -17,8 +17,10 @@ stacks/
   mosquitto/          mqtt broker. No web ui, not on the proxy network.
   frigate/            camera nvr. Detection on the 3080; recording is off.
   homeassistant/      the iphone app for the cameras, and house automation.
-  unifi/              PARKED. superseded on trial by UniFi OS Server on the
-                      host; kept as the rollback path, not deployed.
+  unifi/              PARKED. the legacy Network Application. kept as the
+                      rollback path for unifi-os/, not deployed.
+  unifi-os/           the switch and access points. UniFi OS Server, and the
+                      most privileged container here - read docs/unifi-os.md.
 scripts/
   deploy.sh           deploy a stack with secrets injected from Infisical
   compose.sh          compose commands that need real secret values (config,
@@ -39,8 +41,9 @@ docs/
   remote-access.md           editing from your main PC
   public-access.md           forwarding 443, DDNS, and what stays private
   cockpit.md                 host management UI, routed through caddy
-  unifi.md                   controller deploy, the inform host, adoption
-  unifi-os-server.md         the host install, on trial. rollback criteria first
+  unifi.md                   PARKED. the legacy controller, kept for rollback
+  unifi-os.md                the controller in use. privileges, adoption, macvlan
+  unifi-os-server.md         the host install. analysed, not done. see decisions
   storage-expansion.md       LVM layout on the 2TB nvme, and what's left free
   decisions.md               why this is shaped the way it is
 home-server-build-plan.md    hardware, BIOS, storage, GPU, everything non-container
@@ -107,10 +110,11 @@ cd ../.. && ./scripts/deploy.sh caddy
 ./scripts/deploy.sh frigate
 ./scripts/deploy.sh homeassistant
 
-# 5. The network controller is NOT deployed from here any more. UniFi OS
-#    Server is installed on the host instead, on trial - a container cannot
-#    see the access points' discovery broadcasts. Read the rollback criteria
-#    before starting: docs/unifi-os-server.md
+# 5. The network controller. No dependencies. Do first-run setup directly on
+#    https://10.0.0.4:11443, NOT through the Caddy hostname - see
+#    docs/unifi-os.md. This is the most privileged container here; read that
+#    doc before deploying it rather than after.
+./scripts/deploy.sh unifi-os
 ```
 
 First Caddy start takes a minute or two while the wildcard certificate is
