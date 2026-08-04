@@ -57,6 +57,14 @@ STACK="${1:-}"
 shift
 [[ $# -eq 0 ]] && usage
 
+# `compose.sh down unifi` reads more naturally than `compose.sh unifi down` and
+# is the wrong way round. Say so, rather than "no such stack: down".
+if [[ ! -d "$REPO_ROOT/stacks/$STACK" && -d "$REPO_ROOT/stacks/${1:-}" ]]; then
+  echo "arguments are the other way round - the stack comes first:" >&2
+  echo "  $0 $1 $STACK ${*:2}" >&2
+  exit 1
+fi
+
 STACK_DIR="$REPO_ROOT/stacks/$STACK"
 [[ -d "$STACK_DIR" ]] || { echo "no such stack: $STACK"; usage; }
 

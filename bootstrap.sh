@@ -284,6 +284,39 @@ else
   ok "no container running on a blank secret"
 fi
 
+# --- 6e. scripts are executable ---------------------------------------------
+# `scripts/compose.sh` was committed as 100644 and the failure was two removes
+# from the cause: `./scripts/compose.sh unifi down` gave "Permission denied",
+# and re-running it under sudo gave "sudo: cannot execute ...: Permission denied
+# (os error 13)", which reads like a sudo or ownership problem rather than a
+# missing +x. Git tracks the executable bit, so a file created without it stays
+# broken on every clone until someone notices.
+#
+# Checks the mode in the index, not on disk: a working tree on a filesystem that
+# does not carry permissions will look fine locally and still be wrong for
+# everyone else.
+#   fix:  git update-index --chmod=+x scripts/<name>.sh
+#
+# Scoped to things a human invokes: scripts/ and bootstrap.sh. Shell files
+# inside stacks/ are deliberately excluded, because "executable" means something
+# different there. stacks/unifi/init-mongo.sh is mounted into
+# /docker-entrypoint-initdb.d/, and mongo's entrypoint *sources* a .sh it finds
+# non-executable and *execs* one it finds executable. Sourced is what we want -
+# it inherits the entrypoint's environment. Flagging it here would invite a
+# +x that quietly changes how it runs.
+nonexec=""
+while read -r mode _ _ path; do
+  [[ "$path" == *.sh ]] || continue
+  [[ "$mode" == "100755" ]] || nonexec+="        $path"$'\n'
+done < <(git -C "$REPO_DIR" ls-files -s scripts/ bootstrap.sh 2>/dev/null)
+if [[ -n "$nonexec" ]]; then
+  warn "scripts tracked as non-executable in git:"
+  printf '%s' "$nonexec"
+  echo "        fix:  git update-index --chmod=+x <path>"
+else
+  ok "all tracked shell scripts are executable"
+fi
+
 # --- 7. infisical cli -------------------------------------------------------
 if command -v infisical >/dev/null; then
   ok "infisical cli $(infisical --version 2>/dev/null | head -1)"
