@@ -312,10 +312,58 @@ What follows from that: `/srv/homeassistant/config` is real state and needs a
 real backup, which it does not yet have. See
 [home-assistant.md](home-assistant.md#backups).
 
+## UniFi publishes ports, and has to
+
+A real exception to [only Caddy publishes ports](#one-shared-proxy-network),
+and the first one a container has been granted.
+
+The UniFi Network Application is reached by two different kinds of client. A
+browser, which Caddy handles like any other app — the web UI on 8443 is not
+published and goes through `unifi.brent-miles.com` exactly like Frigate and
+Home Assistant. And the switch and access points, which do not speak HTTP to
+their controller at all: `8080/tcp` for the inform channel, `3478/udp` for
+STUN, `10001/udp` for discovery broadcasts. A reverse proxy carries none of
+those, and there is no configuration of Caddy that changes this.
+
+The alternatives were considered and are worse:
+
+- **`network_mode: host`** would work and is what a lot of guides suggest. It
+  also puts every port the application opens on the LAN, including 8443, and
+  takes the container off `proxy` so Caddy can no longer reach it by name. One
+  deliberate exception becomes a blanket one.
+- **A Cloud Key** removes the problem by buying hardware, which is the correct
+  answer for somebody who does not already have a server running.
+
+So: three device-facing ports, published, listed individually in the compose
+file with what breaks without each one. Two of them are bound to `10.0.0.4`
+rather than `0.0.0.0` so the interface is a decision. `10001/udp` is not,
+because devices announce themselves by broadcast and a socket bound to a
+unicast address never sees that traffic — a subtlety that would otherwise
+present as an empty Devices page with nothing in any log.
+
+`bootstrap.sh`'s stray-port check now carries an explicit allow-list rather
+than a special case buried in a regex. The point of that check is that a
+second publisher should be a decision someone made, and an allow-list is what
+a decision looks like in a script.
+
+**Where the line is:** the UI stays behind Caddy and stays LAN-only, for the
+same reason Frigate does. A network controller can reconfigure the network
+every other service in the house sits on. It is not a candidate for the public
+zone, now or later.
+
+**Consequence:** README rule 2 is no longer literally true and now reads as a
+rule with one named exception. That is worse than an absolute rule and better
+than a rule everybody knows is quietly violated.
+
+See [unifi.md](unifi.md).
+
 ## Still open
 - **A backup for Home Assistant's data directory.** HA Container has no backup
   UI, and `/srv/homeassistant/config/.storage` holds every credential HA has.
   Nothing covers it today.
+- **An offsite copy of UniFi's `.unf` backups.** Same shape as the HA problem:
+  `/srv/unifi/config/data/backup` is the only thing that can rebuild the
+  controller, and it exists on one disk. See [unifi.md](unifi.md#backups).
 - **Immich transcoding on the now-idle iGPU.** Free performance, unclaimed.
 - **Backups.** The photo library will exist in exactly one place on one NVMe.
   `rclone` to OneDrive is the intended answer; until it runs, this is the

@@ -192,6 +192,38 @@ photos.{env.DOMAIN} {
 		}
 	}
 
+	# --- unifi.<domain> - UniFi Network Application -------------------------
+	# The controller for the house switch and access points.
+	#
+	# `https://` upstream, unlike every other block in this file. The UniFi
+	# app terminates TLS itself on 8443 with a self-signed certificate and
+	# has no plaintext listener to point at instead. Verification is skipped
+	# for the same reason it is for Cockpit: there is no way to issue a
+	# trusted certificate for a name the container is never addressed by, and
+	# the hop is container-to-container on the proxy network.
+	#
+	# This is the UI only. Devices do not come through here - switches and APs
+	# talk to published host ports (8080/tcp inform, 3478/udp STUN) because
+	# they speak protocols a reverse proxy cannot carry. That is the exception
+	# in docs/decisions.md#unifi-publishes-ports-and-has-to, and it is why
+	# 8443 can stay unpublished while the stack still works.
+	#
+	# Must stay in the LAN-only block. A network controller is the same class
+	# of service as the NVR: everything it can do, it can do to the network
+	# the rest of the house is on.
+	@unifi host unifi.{env.DOMAIN}
+	handle @unifi {
+		reverse_proxy https://unifi:8443 {
+			transport http {
+				tls_insecure_skip_verify
+			}
+			# The dashboard's live client and device stats arrive over a
+			# WebSocket. Caddy upgrades it on its own but buffers by default,
+			# which shows up as a page that loads fine and then never updates.
+			flush_interval -1
+		}
+	}
+
 	# --- template: copy this block for each new app ------------------------
 	# @myapp host myapp.{env.DOMAIN}
 	# handle @myapp {

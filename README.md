@@ -17,6 +17,7 @@ stacks/
   mosquitto/          mqtt broker. No web ui, not on the proxy network.
   frigate/            camera nvr. Detection on the 3080; recording is off.
   homeassistant/      the iphone app for the cameras, and house automation.
+  unifi/              the switch and access points. The one app publishing ports.
 scripts/
   deploy.sh           deploy a stack with secrets injected from Infisical
   infisical-backup.sh nightly dump of the secrets database
@@ -33,6 +34,7 @@ docs/
   remote-access.md           editing from your main PC
   public-access.md           forwarding 443, DDNS, and what stays private
   cockpit.md                 host management UI, routed through caddy
+  unifi.md                   controller deploy, the inform host, adoption
   storage-expansion.md       LVM layout on the 2TB nvme, and what's left free
   decisions.md               why this is shaped the way it is
 home-server-build-plan.md    hardware, BIOS, storage, GPU, everything non-container
@@ -55,11 +57,17 @@ The ordered cutover, and the checks that prove the guard works, are in
 host, deploy. SSH in to read logs and debug, not to change files. The moment
 you fix something directly on the server, this repo starts lying to you.
 
-**2. Only Caddy publishes ports.** Every other stack joins the shared `proxy`
-network and is reached by container name. This is not just tidiness: Docker
-writes its iptables rules ahead of UFW's, so a published port is reachable
-from the LAN no matter what `ufw status` claims. One container publishing
-ports is a decision; two is an accident.
+**2. Only Caddy publishes ports, with one named exception.** Every other stack
+joins the shared `proxy` network and is reached by container name. This is not
+just tidiness: Docker writes its iptables rules ahead of UFW's, so a published
+port is reachable from the LAN no matter what `ufw status` claims. One
+container publishing ports is a decision; two is an accident.
+
+The exception is `unifi`, which publishes three device-facing ports because
+switches and access points speak raw UDP to their controller and a reverse
+proxy cannot carry it. Its web UI still goes through Caddy. `bootstrap.sh`
+allow-lists it by name, so a third publisher still shows up as a warning —
+see [docs/decisions.md](docs/decisions.md#unifi-publishes-ports-and-has-to).
 
 ---
 
@@ -92,6 +100,11 @@ cd ../.. && ./scripts/deploy.sh caddy
 ./scripts/deploy.sh mosquitto
 ./scripts/deploy.sh frigate
 ./scripts/deploy.sh homeassistant
+
+# 5. The network controller. No dependencies, deploy whenever - but set the
+#    inform host immediately after first login or the access points will
+#    adopt and then go offline. See docs/unifi.md.
+./scripts/deploy.sh unifi
 ```
 
 First Caddy start takes a minute or two while the wildcard certificate is

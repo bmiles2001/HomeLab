@@ -88,7 +88,8 @@ fi
 
 # --- 4. data directories ----------------------------------------------------
 for d in /srv/immich/data /srv/caddy /srv/infisical /srv/backups/infisical \
-         /srv/frigate/media /srv/frigate/models /srv/homeassistant/config; do
+         /srv/frigate/media /srv/frigate/models /srv/homeassistant/config \
+         /srv/unifi/config; do
   if [[ ! -d "$d" ]]; then
     sudo mkdir -p "$d"
     sudo chown "$(id -u):$(id -g)" "$d"
@@ -142,8 +143,19 @@ fi
 # --- 6. only caddy should publish ports -------------------------------------
 # The architectural rule, checked rather than trusted. Apps join `proxy` and
 # are reached by container name; anything else with a host port is a mistake.
+#
+# `unifi` is the one allowed exception, and it is named here rather than
+# quietly tolerated: switches and APs speak raw UDP to the controller, so its
+# device-facing ports cannot go through Caddy. Its web UI still does. See
+# docs/decisions.md#unifi-publishes-ports-and-has-to.
+#
+# Note this only catches ports published on all interfaces. unifi's 8080 and
+# 3478 are bound to the LAN address specifically and never matched here in the
+# first place; 10001/udp is, and is what the allow-list is for.
+ALLOWED_PUBLISHERS='caddy|unifi'
 strays=$(docker ps --format '{{.Names}}|{{.Ports}}' \
-  | grep -E '0\.0\.0\.0:|:::' | grep -v '^caddy|' | cut -d'|' -f1 || true)
+  | grep -E '0\.0\.0\.0:|:::' \
+  | grep -vE "^($ALLOWED_PUBLISHERS)\|" | cut -d'|' -f1 || true)
 if [[ -n "$strays" ]]; then
   warn "containers publishing ports other than caddy:"
   echo "$strays" | sed 's/^/        /'

@@ -1,0 +1,196 @@
+name: unifi
+
+# UniFi Network Application - the controller for the house switch and APs.
+#
+# Deploy:  ./scripts/deploy.sh unifi
+#
+# This is the second stack in the repo that publishes ports, and the only app
+# that does. That is a deliberate exception to README rule 2, not a slip -
+# see docs/decisions.md#unifi-publishes-ports-and-has-to.
+#
+# Three things about this stack that are not like the others:
+#
+#   1. The web UI (8443) is NOT published. Caddy reaches it over `proxy` at
+#      unifi:8443, same as every other app. Only the device-facing protocol
+#      ports are on the host, because switches and APs speak raw UDP/TCP that
+#      a reverse proxy cannot carry.
+#
+#   2. The MONGO_* variables below are read ONCE, on first run, and written
+#      into /config/system.properties. Rotating MONGO_PASS in Infisical later
+#      changes nothing until that file is edited by hand. This is the one
+#      place in the repo where a secret rotation does not take effect on
+#      redeploy - see docs/unifi.md#rotating-the-mongo-password.
+#
+#   3. Ubiquiti only supports specific MongoDB majors, and Mongo does not
+#      upgrade across majors on its own. Both images are pinned. Read
+#      docs/unifi.md before bumping either.
+
+services:
+  unifi:
+    container_name: unifi
+    # Pinned, not `latest`. The linuxserver tag carries both the UniFi version
+    # and their build number. Check the changelog before bumping: this image
+    # has changed bundled JRE versions to track UniFi's requirements, and a
+    # major UniFi release can also change which MongoDB versions are allowed.
+    image: lscr.io/linuxserver/unifi-network-application:${UNIFI_VERSION:-10.4.57-ls139}
+    restart: unless-stopped
+
+    depends_on:
+      unifi-db:
+        condition: service_healthy
+
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-America/Chicago}
+
+      # Only evaluated on first run - see note 2 at the top of this file.
+      # MONGO_USER and MONGO_PASS must match what init-mongo.sh creates in the
+      # database container below, because both read the same injected values.
+      #
+      # Special characters in these end up in a MongoDB connection URI and
+      # must be percent-encoded. Generate the password in Infisical as
+      # alphanumeric only and this problem does not exist.
+      MONGO_HOST: ${MONGO_HOST:-unifi-db}
+      MONGO_PORT: ${MONGO_PORT:-27017}
+      MONGO_DBNAME: ${MONGO_DBNAME:-unifi}
+      MONGO_USER: ${MONGO_USER:-unifi}
+      MONGO_PASS: ${MONGO_PASS:?not injected - deploy via scripts/deploy.sh}
+      # The database the credentials live in, not the one they are used on.
+      # init-mongo.sh authenticates against `admin` and creates the unifi user
+      # there, so this is `admin`. Changing one without the other gives
+      # "Authentication failed" on a stack that otherwise looks healthy.
+      MONGO_AUTHSOURCE: ${MONGO_AUTHSOURCE:-admin}
+
+      # The app is a Java process and will happily size its heap against the
+      # whole machine. Bounded here so a controller with a lot of history
+      # cannot start competing with Immich and Frigate for RAM.
+      MEM_LIMIT: ${UNIFI_MEM_LIMIT:-1024}
+      MEM_STARTUP: ${UNIFI_MEM_STARTUP:-1024}
+
+    volumes:
+      # A real path rather than a named volume, because the UI's own backups
+      # land in here (/config/data/backup) and those are the only recovery
+      # path this stack has - restoring a UniFi controller means importing a
+      # .unf file, not copying a data directory. Something outside the
+      # container needs to be able to reach them.
+      - ${UNIFI_CONFIG:-/srv/unifi/config}:/config
+      - /etc/localtime:/etc/localtime:ro
+
+    ports:
+      # Device-facing only. Bound to the LAN address rather than 0.0.0.0 so
+      # the interface is a decision rather than a default - same pattern as the
+      # commented go2rtc example in stacks/frigate/compose.yml.
+      #
+      # 8080/tcp - inform. Devices post their state here and receive config.
+      #   This is the port that must never be remapped: the number is written
+      #   into each device's inform URL at adoption, and changing the host side
+      #   alone gives devices that adopt successfully and then go offline
+      #   minutes later. If it ever has to move, it moves in system.properties
+      #   too. See docs/unifi.md.
+      - "${LAN_IP:-10.0.0.4}:8080:8080"
+      #
+      # 3478/udp - STUN. How devices keep a path back to the controller. An AP
+      #   with no STUN shows as "Adopting" or flaps between connected and
+      #   disconnected without ever saying why.
+      - "${LAN_IP:-10.0.0.4}:3478:3478/udp"
+
+      # 10001/udp - device discovery, and the one port here that is NOT bound
+      # to a single address. Devices announce themselves by broadcast, and a
+      # socket bound to 10.0.0.4 does not receive traffic addressed to the
+      # subnet broadcast - Docker's DNAT rule would only match the unicast
+      # address. Binding it would leave the "Devices" page empty for anything
+      # not yet adopted, with nothing in any log to explain it.
+      #
+      # Adoption itself does not depend on this. `set-inform` over SSH works
+      # regardless - docs/unifi.md#adopting-a-device-that-never-appears.
+      - "10001:10001/udp"
+
+      # Deliberately NOT published:
+      #   8443  the web UI - Caddy reaches it over `proxy` at unifi:8443
+      #   1900  L2 "make controller discoverable" - only used by the mobile
+      #         app's local discovery, which is not how this one is reached
+      #   8880  guest portal HTTP redirect  - no guest portal configured
+      #   8843  guest portal HTTPS redirect - no guest portal configured
+      #   6789  mobile speed test
+      #   5514  remote syslog
+      # Add one only with a reason, and add the reason here.
+
+    networks:
+      - default   # reaches unifi-db
+      - proxy     # reachable by caddy
+
+    healthcheck:
+      # /status is unauthenticated and returns the app's own readiness, which
+      # is later than the port opening - the controller listens on 8443 for a
+      # minute or more before it will actually serve anything.
+      test: ["CMD-SHELL", "curl -skf https://localhost:8443/status || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+  unifi-db:
+    container_name: unifi-db
+    # Pinned to a major on purpose. MongoDB refuses to start on a data
+    # directory written by a newer major and does no automatic upgrade, so
+    # `latest` here is a time bomb that goes off on an unrelated redeploy.
+    #
+    # UniFi 9.0+ supports MongoDB 8.0; 8.1+ supported 3.6-7.0. Bumping this
+    # major is a documented procedure, not an edit - docs/unifi.md#upgrading-mongodb.
+    #
+    # Mongo >4.4 on x86_64 needs AVX. The i9 in forge has it; this is only a
+    # problem if this stack is ever moved to an older low-end box.
+    image: docker.io/mongo:${MONGO_VERSION:-8.0}
+    restart: unless-stopped
+
+    environment:
+      # Root credentials exist so that RBAC is on at all. Before linuxserver
+      # changed these instructions in Aug 2024, the documented setup left the
+      # database with authentication disabled - which is only survivable
+      # because 27017 is not published. It is not published AND auth is on.
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?not injected - deploy via scripts/deploy.sh}
+      # Read by init-mongo.sh to create the application user. Same values the
+      # unifi container above is given, from the same Infisical path.
+      MONGO_USER: ${MONGO_USER:-unifi}
+      MONGO_PASS: ${MONGO_PASS:?not injected - deploy via scripts/deploy.sh}
+      MONGO_DBNAME: ${MONGO_DBNAME:-unifi}
+      MONGO_AUTHSOURCE: ${MONGO_AUTHSOURCE:-admin}
+
+    volumes:
+      # Named, unlike the config path above. This is database state recovered
+      # from a UniFi backup rather than from a file copy, and it belongs on
+      # ext4 with correct ownership.
+      - unifi_db:/data/db
+      # Runs once, on an empty /data/db, and never again. If the volume
+      # already has data - including the sample data Mongo writes when it
+      # starts with no init script - this file is silently skipped and the
+      # unifi container then fails to authenticate. The fix is always to
+      # delete the volume and start over, never to edit this.
+      - ./init-mongo.sh:/docker-entrypoint-initdb.d/init-mongo.sh:ro
+
+    networks:
+      - default   # and NOT proxy: nothing else has any business reaching this
+
+    # No published ports. 27017 with RBAC on is still 27017.
+
+    healthcheck:
+      # `ping` is allowed before authentication, so this proves the server is
+      # accepting connections without needing credentials in the healthcheck.
+      # depends_on above waits for this, which is what stops the unifi
+      # container from burning its first-run configuration against a database
+      # that is not up yet.
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' | grep -q 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  unifi_db:
+
+networks:
+  default:
+  proxy:
+    external: true
