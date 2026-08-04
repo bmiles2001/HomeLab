@@ -1,5 +1,27 @@
 name: unifi
 
+# ============================================================================
+# PARKED - not deployed. Superseded on trial by UniFi OS Server on the host.
+#
+# This stack works and is kept deliberately: it is the rollback path if the
+# host install damages anything, per rule 2 in docs/unifi-os-server.md. Do not
+# delete it, and do not remove the `unifi_unifi_db` volume, until that trial
+# has been resolved one way or the other.
+#
+# Bring it back:  ./scripts/deploy.sh unifi
+#                 then uncomment the unifi block in stacks/caddy/Caddyfile and
+#                 ./scripts/deploy.sh caddy -- --force-recreate
+#
+# Why it was parked: the controller sits on 172.18.x.x while the access points
+# broadcast on 10.0.0.x, so Layer-2 discovery works in neither direction and
+# every adoption is a manual `set-inform`. Ubiquiti's own answer to "will this
+# be a container" is no, for that exact reason. See
+# docs/unifi-os-server.md#why-this-and-not-the-container.
+#
+# If it is still parked and the host install is settled, delete this directory
+# rather than leaving a stack nobody deploys.
+# ============================================================================
+
 # UniFi Network Application - the controller for the house switch and APs.
 #
 # Deploy:  ./scripts/deploy.sh unifi

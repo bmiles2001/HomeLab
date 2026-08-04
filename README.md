@@ -17,11 +17,14 @@ stacks/
   mosquitto/          mqtt broker. No web ui, not on the proxy network.
   frigate/            camera nvr. Detection on the 3080; recording is off.
   homeassistant/      the iphone app for the cameras, and house automation.
-  unifi/              the switch and access points. The one app publishing ports.
+  unifi/              PARKED. superseded on trial by UniFi OS Server on the
+                      host; kept as the rollback path, not deployed.
 scripts/
   deploy.sh           deploy a stack with secrets injected from Infisical
   compose.sh          compose commands that need real secret values (config,
                       one-off run). down/logs/ps work as plain compose.
+  host-snapshot.sh    before/after/diff of ports, containers, iptables and
+                      subnets. run it before any risky host change
   infisical-backup.sh nightly dump of the secrets database
   immich-onedrive-*   one-way mirror of the photo library to OneDrive
 docs/
@@ -37,6 +40,7 @@ docs/
   public-access.md           forwarding 443, DDNS, and what stays private
   cockpit.md                 host management UI, routed through caddy
   unifi.md                   controller deploy, the inform host, adoption
+  unifi-os-server.md         the host install, on trial. rollback criteria first
   storage-expansion.md       LVM layout on the 2TB nvme, and what's left free
   decisions.md               why this is shaped the way it is
 home-server-build-plan.md    hardware, BIOS, storage, GPU, everything non-container
@@ -103,10 +107,10 @@ cd ../.. && ./scripts/deploy.sh caddy
 ./scripts/deploy.sh frigate
 ./scripts/deploy.sh homeassistant
 
-# 5. The network controller. No dependencies, deploy whenever - but set the
-#    inform host immediately after first login or the access points will
-#    adopt and then go offline. See docs/unifi.md.
-./scripts/deploy.sh unifi
+# 5. The network controller is NOT deployed from here any more. UniFi OS
+#    Server is installed on the host instead, on trial - a container cannot
+#    see the access points' discovery broadcasts. Read the rollback criteria
+#    before starting: docs/unifi-os-server.md
 ```
 
 First Caddy start takes a minute or two while the wildcard certificate is

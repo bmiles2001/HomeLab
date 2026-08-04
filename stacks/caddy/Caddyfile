@@ -222,18 +222,26 @@ photos.{env.DOMAIN} {
 	# Must stay in the LAN-only block. A network controller is the same class
 	# of service as the NVR: everything it can do, it can do to the network
 	# the rest of the house is on.
-	@unifi host unifi.{env.DOMAIN}
-	handle @unifi {
-		reverse_proxy https://unifi:8443 {
-			transport http {
-				tls_insecure_skip_verify
-			}
-			# The dashboard's live client and device stats arrive over a
-			# WebSocket. Caddy upgrades it on its own but buffers by default,
-			# which shows up as a page that loads fine and then never updates.
-			flush_interval -1
-		}
-	}
+	# COMMENTED OUT: stacks/unifi is parked while UniFi OS Server is trialled
+	# on the host. Left in place rather than deleted because uncommenting it is
+	# step 4 of the rollback - docs/unifi-os-server.md#rolling-back.
+	#
+	# UniFi OS Server does NOT go here. It serves its own portal on 443 and
+	# manages its own certificates, so it is not a reverse-proxy upstream. If
+	# it installs successfully, this block gets deleted rather than repointed.
+	#
+	# @unifi host unifi.{env.DOMAIN}
+	# handle @unifi {
+	# 	reverse_proxy https://unifi:8443 {
+	# 		transport http {
+	# 			tls_insecure_skip_verify
+	# 		}
+	# 		# The dashboard's live client and device stats arrive over a
+	# 		# WebSocket. Caddy upgrades it on its own but buffers by default,
+	# 		# which shows up as a page that loads fine and then never updates.
+	# 		flush_interval -1
+	# 	}
+	# }
 
 	# --- template: copy this block for each new app ------------------------
 	# @myapp host myapp.{env.DOMAIN}

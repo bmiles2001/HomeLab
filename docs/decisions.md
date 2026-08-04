@@ -542,6 +542,65 @@ mount would hand its web UI a writable config again, which is exactly the drift
 exists to prevent. A recreate is cheap; a config store that competes with the
 repo is not.
 
+## UniFi OS Server runs on the host, on trial
+
+Reverses [UniFi publishes ports, and has to](#unifi-publishes-ports-and-has-to)
+in practice, though the reasoning there still stands for anyone running the
+container.
+
+The container was the right shape for this repo and the wrong shape for the
+job. A network controller needs to be on the same broadcast domain as the
+hardware it manages; ours sat on `172.18.x.x` while the access points
+broadcast on `10.0.0.x`. Published ports carry the unicast traffic — inform and
+STUN — but nothing carries discovery, so every adoption becomes a manual
+`set-inform` over SSH and nothing new ever appears by itself.
+
+Ubiquiti's answer to "will UniFi OS Server ship as a container" is the same
+observation from the other side: *"No. This is a complete solution that
+requires certain services to be run on the host to enable device discovery,
+adoption, and automatic system updates."*
+
+The second reason was cheaper to discover and more annoying: the legacy Network
+Server gates parts of first-run setup behind an online Ubiquiti account, and
+fails with a bare `403` on `/api/cmd/sitemgr` that is indistinguishable from a
+deployment bug. It was neither a MongoDB permission problem nor an egress
+problem, both of which were ruled out the slow way first.
+
+### Why this is a bigger exception than Cockpit
+
+[Cockpit](cockpit.md) was allowed in because it stores nothing: a view over
+systemd and LVM, rebuildable from `apt install` plus one file in this repo.
+UniFi OS Server fails that test four times over — it holds every adoption key
+and all site history, it is a binary from a download URL rather than an apt
+package, it updates itself through its own Update Manager, and it brings
+podman onto a box that deliberately moved to Docker.
+
+Each of those has a precedent here. Home Assistant already keeps real state
+outside git. Cockpit already runs on the host. Nothing yet does all of it at
+once, and nothing yet updates itself.
+
+### The trial, and how it ends
+
+Adopted **on trial**, with the exit conditions agreed in advance rather than
+argued about afterwards:
+
+1. **If it fails, that is acceptable.** Leave it broken, come back later.
+2. **If it damages the Docker infrastructure, roll back immediately.** Immich,
+   Frigate, Home Assistant, Infisical and Caddy worked before and must work
+   after.
+
+`scripts/host-snapshot.sh` exists so rule 2 is a diff rather than a judgement
+call — ports, containers, subnets, iptables and services, captured before and
+compared after. The rollback path is `stacks/unifi/`, which is parked rather
+than deleted for exactly this reason.
+
+The known collision is port 443, which Caddy holds and UniFi OS Server wants.
+Caddy keeps it by incumbency: if the installer cannot bind, that is rule 1 and
+costs nothing. Stopping Caddy first to make room would convert an acceptable
+failure into rule 2, self-inflicted.
+
+See [unifi-os-server.md](unifi-os-server.md).
+
 ## Still open
 - **A backup for Home Assistant's data directory.** HA Container has no backup
   UI, and `/srv/homeassistant/config/.storage` holds every credential HA has.
@@ -549,6 +608,9 @@ repo is not.
 - **An offsite copy of UniFi's `.unf` backups.** Same shape as the HA problem:
   `/srv/unifi/config/data/backup` is the only thing that can rebuild the
   controller, and it exists on one disk. See [unifi.md](unifi.md#backups).
+- **A backup for UniFi OS Server's state**, if the trial succeeds. It holds
+  every adoption key and all site history in podman volumes it owns, and
+  updates itself. Same shape as the Home Assistant gap above.
 - **UniFi's MongoDB is pinned back to 7.0, and shouldn't stay there.** MongoDB
   8.0+ refuses to start on Linux kernels 6.19 through 7.0.13 — a bundled
   TCMalloc depending on rseq behaviour the kernel stopped providing. 7.0 is
