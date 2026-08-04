@@ -183,6 +183,13 @@ services:
       # from a UniFi backup rather than from a file copy, and it belongs on
       # ext4 with correct ownership.
       - unifi_db:/data/db
+      # Always empty on a standalone server, and mounted anyway. The mongo
+      # image declares `VOLUME /data/db /data/configdb`, and an unmounted
+      # VOLUME becomes an anonymous 64-hex volume created fresh on every
+      # container recreate. /data/configdb only holds config-server state in a
+      # sharded cluster, so nothing lands here - but naming it is the
+      # difference between one empty volume and a new orphan per redeploy.
+      - unifi_db_config:/data/configdb
       # Runs once, on an empty /data/db, and never again. If the volume
       # already has data - including the sample data Mongo writes when it
       # starts with no init script - this file is silently skipped and the
@@ -209,6 +216,7 @@ services:
 
 volumes:
   unifi_db:
+  unifi_db_config:
 
 networks:
   default:

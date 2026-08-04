@@ -85,6 +85,19 @@ services:
       - mosquitto_config:/mosquitto/config
       # Retained messages and queued QoS>0 messages survive a restart. Small.
       - mosquitto_data:/mosquitto/data
+      # Always empty, and mounted anyway.
+      #
+      # The image declares `VOLUME /mosquitto/data /mosquitto/log`. Docker
+      # honours a VOLUME with no mount by creating an ANONYMOUS volume - a
+      # 64-hex-character name, owned by nothing, that survives the container
+      # and is created fresh on every recreate. Left alone, this stack quietly
+      # accumulated one orphan per redeploy.
+      #
+      # Nothing is ever written here: mosquitto.conf sets `log_dest stdout` so
+      # logs go to `docker logs`. This mount exists purely so the image's
+      # VOLUME has somewhere named to land. If `log_dest file` is ever set,
+      # this is already the right shape.
+      - mosquitto_log:/mosquitto/log
 
     networks:
       - iot
@@ -105,6 +118,7 @@ services:
 volumes:
   mosquitto_config:
   mosquitto_data:
+  mosquitto_log:
 
 networks:
   iot:

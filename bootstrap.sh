@@ -163,6 +163,31 @@ else
   ok "no stray published ports"
 fi
 
+# --- 6b. no anonymous volumes -----------------------------------------------
+# An image can declare `VOLUME /some/path` in its Dockerfile. If nothing is
+# mounted there, Docker still creates a volume - an anonymous one, named with
+# 64 hex characters, belonging to no stack and described by no file in this
+# repo. It is created fresh on every container recreate, so the old one is
+# orphaned rather than reused, and `docker volume ls` slowly fills with
+# identical-looking garbage that nobody dares delete.
+#
+# Two were found this way: eclipse-mosquitto declares /mosquitto/log, and the
+# mongo image declares /data/configdb. Both are now mounted by name in their
+# compose files even though both stay empty.
+#
+# The rule this enforces: every volume on this box is named, and every name
+# traces back to a compose file. If this warns, find which image declared it
+# with `docker inspect <container>` and give it an explicit mount.
+anon=$(docker volume ls -q 2>/dev/null | grep -E '^[0-9a-f]{64}$' || true)
+if [[ -n "$anon" ]]; then
+  warn "anonymous volumes present - some image has an unmounted VOLUME:"
+  echo "$anon" | sed 's/^/        /'
+  echo "        find the owner:  docker ps -q | xargs docker inspect \\"
+  echo "                           --format '{{.Name}} {{range .Mounts}}{{.Name}} {{end}}'"
+else
+  ok "no anonymous volumes"
+fi
+
 # --- 7. infisical cli -------------------------------------------------------
 if command -v infisical >/dev/null; then
   ok "infisical cli $(infisical --version 2>/dev/null | head -1)"

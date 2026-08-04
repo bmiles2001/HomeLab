@@ -357,6 +357,31 @@ than a rule everybody knows is quietly violated.
 
 See [unifi.md](unifi.md).
 
+## Every volume is named, including the empty ones
+
+A small convention with an annoying failure mode behind it.
+
+An image can declare `VOLUME /some/path` in its Dockerfile. If the compose file
+mounts nothing there, Docker does not skip it — it creates an **anonymous**
+volume, named with 64 hex characters, owned by no stack and described by no
+file in this repo. Worse, it is not reused: each `docker compose up` that
+recreates the container makes a new one and orphans the old. `docker volume ls`
+fills up with identical-looking entries that nobody can safely delete, because
+telling a live one from an orphan means inspecting every container.
+
+Two images here do this. `eclipse-mosquitto` declares `/mosquitto/log`, and
+`mongo` declares `/data/configdb`. Neither path is ever written to in this
+setup — mosquitto logs to stdout, and `/data/configdb` only holds state in a
+sharded cluster — so both mounts are permanently empty and both exist anyway.
+
+The rule: **every volume on this box is named, and every name traces back to a
+compose file.** An empty named volume costs nothing. An anonymous one costs the
+ability to reason about `docker volume ls` at all.
+
+`bootstrap.sh` checks for 64-hex volume names, in the same spirit as the
+stray-port check — the point of a convention is that something notices when it
+breaks.
+
 ## Still open
 - **A backup for Home Assistant's data directory.** HA Container has no backup
   UI, and `/srv/homeassistant/config/.storage` holds every credential HA has.
