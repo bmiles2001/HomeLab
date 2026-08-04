@@ -275,12 +275,21 @@ The 970 EVO Plus 2TB is rated 1200 TBW, which a photo library will not come near
 A continuously-writing NVR would — worth a baseline reading now so there is
 something to compare against if one is ever added back.
 
-Beszel can chart and alert on both numbers rather than leaving them to be
-remembered; it needs two commented blocks uncommented and a broad capability
-granted, which is a decision in itself. See
-[beszel.md](beszel.md#smart-if-you-want-it). Disk *usage* on both volumes —
-the thing that hit 92% — is already covered by the same stack with no extra
-privileges, see [beszel.md](beszel.md#the-second-disk).
+**Covered, 2026-08-04.** Beszel charts both numbers and alerts automatically if
+the drive reports failure — see [beszel.md](beszel.md#smart--on). Take the
+baseline reading once it is deployed:
+
+```bash
+docker exec beszel-agent smartctl -a /dev/nvme0 | grep -iE "percentage used|media.*errors"
+```
+
+The cost was `SYS_ADMIN` and a raw controller device on the monitoring agent,
+which prices out the socket proxy that stack would otherwise get later —
+[decisions.md](decisions.md#smart-is-on-and-it-prices-the-socket-proxy-in).
+
+Disk *usage* on both volumes — the thing that actually hit 92% — is covered by
+the same stack with no extra privileges,
+[beszel.md](beszel.md#the-second-disk).
 
 ### 4. Unattended security updates
 

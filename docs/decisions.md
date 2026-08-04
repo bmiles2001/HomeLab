@@ -743,11 +743,32 @@ mitigation is a socket proxy holding the socket and returning 403 for
 everything but `GET /containers/*/stats` —
 [beszel.md](beszel.md#the-docker-socket-is-the-real-cost), and open, not built.
 
-A corollary that matters when reading the S.M.A.R.T. block in the compose file:
-`SYS_ADMIN` does **not** compound with this. The socket already grants
-everything `SYS_ADMIN` would. They are alternative routes to the same place,
-and the only reason to keep SMART off is that turning it on would make the
-socket proxy pointless when it is eventually built.
+### SMART is on, and it prices the socket proxy in
+
+Decided 2026-08-04, and the ordering is the whole point.
+
+`SYS_ADMIN` and a raw NVMe controller do **not** compound with the socket above.
+The socket already grants everything they would, so on the day they were enabled
+they changed the blast radius by exactly zero. Anyone reading the compose file
+and seeing two scary-looking privileges next to each other should understand
+they are alternative routes to one place, not two locks on one door.
+
+What they do is **price the socket proxy**. That mitigation exists to move this
+container out of the root-equivalent class; `SYS_ADMIN` plus `/dev/nvme0` keeps
+it there regardless of what the socket is doing — NVMe admin passthrough reaches
+Format and Sanitize, and raw controller access reads any block on the disk with
+no reference to file permissions.
+
+So the proxy stopped being a thing that can be bolted on later in isolation. It
+is now a two-part job: proxy the socket **and** revert the SMART block, giving
+up drive health, or find another way to read it. Doing only the first half is
+the failure mode to guard against — real work, no security change, and a
+container everyone now believes is constrained.
+
+Made knowingly, and the reasoning is not subtle: everything on forge is on one
+NVMe, most of it has no second copy, and `storage-expansion.md` already records
+this box running out of disk once without anything noticing. A mitigation that
+exists beats one that is written down. Drive health won.
 
 ## Still open
 - **A backup for Home Assistant's data directory.** HA Container has no backup
@@ -759,9 +780,13 @@ socket proxy pointless when it is eventually built.
 - **A backup for UniFi OS Server's state**, if the trial succeeds. It holds
   every adoption key and all site history in podman volumes it owns, and
   updates itself. Same shape as the Home Assistant gap above.
-- **A socket proxy in front of Beszel's agent**, and a backup for
-  `/srv/beszel/data`. The first is the mitigation for the exposure described
-  above; the second is where the alert rules live, and they are not in git.
+- **A socket proxy in front of Beszel's agent** — now a two-part job, not one.
+  Proxying the socket without also reverting the S.M.A.R.T. block changes
+  nothing, because `SYS_ADMIN` and `/dev/nvme0` keep the container
+  root-equivalent on their own. Either both, or neither, or a different way to
+  read drive health. See [SMART is on](#smart-is-on-and-it-prices-the-socket-proxy-in).
+- **A backup for `/srv/beszel/data`.** It holds the alert rules, which are not
+  in git — the same gap Home Assistant has.
 - **UniFi's MongoDB is pinned back to 7.0, and shouldn't stay there.** MongoDB
   8.0+ refuses to start on Linux kernels 6.19 through 7.0.13 — a bundled
   TCMalloc depending on rseq behaviour the kernel stopped providing. 7.0 is

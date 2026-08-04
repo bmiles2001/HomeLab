@@ -175,31 +175,41 @@ services:
               capabilities:
                 - utility
 
-    # S.M.A.R.T. for the NVMe, deliberately left off. Uncomment both blocks
-    # together to answer docs/storage-expansion.md's "Still to do: drive
-    # health" - Percentage Used and Media Errors on the one disk that carries
-    # everything, charted and alerted on rather than remembered about.
+    # S.M.A.R.T. for the NVMe. ON, decided 2026-08-04, and the decision has a
+    # consequence attached rather than being free.
     #
-    # It is not on by default, but NOT because it stacks with the docker
-    # socket - it does not. The socket above is already root-equivalent, so
-    # SYS_ADMIN grants this container nothing it cannot already reach. The two
-    # are alternative routes to the same place, not two locks on one door.
+    # What it buys: Percentage Used and Media Errors on the one disk that
+    # carries the OS, the containers, the photo library and the thing called
+    # "backups" - charted, and alerted on automatically when a drive reports
+    # failure. It closes "Still to do: drive health" in
+    # docs/storage-expansion.md, which was previously answered by remembering
+    # to run smartctl.
     #
-    # The reason to leave it off is what happens AFTER the socket proxy in
-    # docs/beszel.md goes in. That work exists to take this container out of
-    # the root-equivalent class; SYS_ADMIN plus a raw NVMe controller would
-    # keep it there, and the proxy would be effort spent for nothing.
+    # What it costs TODAY: nothing. SYS_ADMIN does not stack with the docker
+    # socket mounted above - that socket is already root-equivalent, so these
+    # capabilities grant this container nothing it could not already reach.
+    # They are alternative routes to the same place, not two locks on one door.
     #
-    # Turn it on now if SMART matters more than a mitigation that isn't built
-    # yet - today it changes the blast radius by zero.
+    # What it costs LATER, and this is the real price: it forecloses the socket
+    # proxy. That work exists to take this container out of the root-equivalent
+    # class, and SYS_ADMIN plus a raw NVMe controller keeps it there - NVMe
+    # admin passthrough can issue Format and Sanitize, and raw controller
+    # access reads any block on the disk regardless of file permissions.
+    # Building the proxy without first reverting this block would be effort
+    # spent for no change in blast radius. See
+    # docs/decisions.md#smart-is-on-and-it-prices-the-socket-proxy-in.
     #
-    # /dev/nvme0 is the CONTROLLER, not /dev/nvme0n1 the block device. Passing
-    # the block device returns no SMART data and no error worth reading.
-    # devices:
-    #   - /dev/nvme0:/dev/nvme0
-    # cap_add:
-    #   - SYS_RAWIO   # SATA/ATA passthrough
-    #   - SYS_ADMIN   # NVMe admin passthrough
+    # /dev/nvme0 is the CONTROLLER, not /dev/nvme0n1 the block device named
+    # everywhere else in this repo. Passing the block device returns no SMART
+    # data and no error worth reading. If capacity comes back missing, some
+    # vendors need the partition mapped onto the controller name instead:
+    #   - /dev/nvme0n1:/dev/nvme0
+    devices:
+      - /dev/nvme0:/dev/nvme0
+    cap_add:
+      - SYS_RAWIO   # SATA/ATA passthrough. Nothing here needs it today; kept
+                    # so an added SATA disk works without a second debug round.
+      - SYS_ADMIN   # NVMe admin passthrough. This is the broad one.
 
     # healthcheck:
     #   Upstream ships `/agent health`, documented against a TCP LISTEN. It is

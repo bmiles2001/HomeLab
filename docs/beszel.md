@@ -69,8 +69,9 @@ fetch its own secrets either.
 
 ### Phase 2 — create the account and mint the credentials
 
-Caddy does not know about `status.` yet, so reach the hub directly from your PC
-over the SSH tunnel, or add the Caddy block first (below) and come back. Then:
+Caddy does not know about `status.` yet, so either run phase 4 first and use the
+hostname, or reach the hub over an SSH tunnel
+([below](#reaching-the-hub-before-caddy-knows-about-it)). Then:
 
 1. Open the hub and **create the admin account**. First visitor wins, same as
    Infisical — do it now, not tomorrow.
@@ -122,6 +123,58 @@ Recreate, not reload — `git pull` replaced the Caddyfile's inode and the runni
 container is still reading the old one. This is the trap in
 `decisions.md#single-file-bind-mounts-need-a-recreate-not-a-reload`, and a new
 hostname returning a closed connection is exactly its symptom.
+
+---
+
+## Reaching the hub before Caddy knows about it
+
+Only needed between phase 1 and phase 4, or from outside the house later. On the
+LAN, once the hostname exists, just use it.
+
+**The obvious command does not work**, and it fails in a way that looks like the
+container is broken:
+
+```bash
+ssh -N -L 8090:localhost:8090 forge      # WRONG - nothing is listening there
+```
+
+`-L` forwards to an address *as resolved on forge*, and on forge nothing is
+listening on 8090. The hub publishes no ports — that is rule 2 working, not a
+fault. The listener exists only on the container's own address on the `proxy`
+network, so that is what the tunnel has to target.
+
+PowerShell, on your main PC:
+
+```powershell
+$ip = (ssh forge "docker inspect -f '{{.NetworkSettings.Networks.proxy.IPAddress}}' beszel").Trim()
+ssh -N -L "8090:${ip}:8090" forge
+```
+
+Bash, WSL or Git Bash, as one line:
+
+```bash
+ssh -N -L "8090:$(ssh forge "docker inspect -f '{{.NetworkSettings.Networks.proxy.IPAddress}}' beszel"):8090" forge
+```
+
+Then browse to <http://localhost:8090>. `-N` means "no shell, just the tunnel";
+leave the window open and Ctrl-C when done. Add `-f` on Unix to background it.
+
+Three things to know:
+
+- **The container IP changes on recreate.** Every `deploy.sh beszel` can hand
+  out a new one, so re-read it rather than saving the command with the address
+  baked in. This is a per-session tool, not a bookmark.
+- **`APP_URL` still points at `https://status.brent-miles.com`.** The UI works
+  fine over the tunnel; only links generated *for elsewhere*, like the ones in
+  alert emails, use that value. Nothing to change.
+- **Tunnelling to Caddy on 443 instead is the harder path**, though it does
+  work — the LAN guard passes it because tunnelled traffic arrives from
+  `127.0.0.1`, which the allow-list includes. But you would need a hosts-file
+  entry so the TLS name matches. Going straight to the container avoids TLS
+  entirely and is the right tool for a one-time setup step.
+
+The same trick reaches any container on `proxy` by IP, which is occasionally
+useful for debugging whether a problem is Caddy's or the app's.
 
 ---
 
@@ -232,16 +285,17 @@ Frigate and Immich.
 
 ---
 
-## S.M.A.R.T., if you want it
+## S.M.A.R.T. — on
 
-`storage-expansion.md` lists drive health under "Still to do": one NVMe carries
-everything, and `Percentage Used` and `Media Errors` are the two numbers worth
-knowing before they matter. Beszel parses `smartctl` output and, if any drive
-reports failure, alerts on it automatically as long as one notification channel
-is configured.
+**Enabled, 2026-08-04.** `storage-expansion.md` listed drive health under "Still
+to do": one NVMe carries the OS, the containers, the photo library and the
+directory called "backups", and `Percentage Used` and `Media Errors` are the two
+numbers worth knowing before they matter. Beszel parses `smartctl` output and,
+if a drive reports failure, alerts on it automatically as long as one
+notification channel is configured.
 
-The `-nvidia` image already contains `smartctl`, so enabling it is uncommenting
-two blocks at the bottom of the agent service:
+The `-nvidia` image already contains `smartctl`, so it needed no image change —
+only a device and two capabilities on the agent service:
 
 ```yaml
 devices:
@@ -254,21 +308,50 @@ cap_add:
 `/dev/nvme0` is the **controller**. `/dev/nvme0n1`, the block device named
 everywhere else in this repo, returns nothing useful and no clear error.
 
-It is off by default — but **not** because `SYS_ADMIN` compounds with the
-docker socket. It doesn't. The socket is already root-equivalent, so `SYS_ADMIN`
-plus a raw NVMe controller grants this container nothing it cannot already
-reach. They are alternative routes to the same place, not two locks on one
-door.
+If capacity comes back missing or the data looks wrong, some vendors need the
+partition mapped onto the controller name instead — `- /dev/nvme0n1:/dev/nvme0`.
+Samsung is not usually one of them.
 
-The reason to leave it off is about the socket proxy above. That work exists to
-take this container *out* of the root-equivalent class. `SYS_ADMIN` and
-`/dev/nvme0` would keep it there — NVMe admin passthrough can issue Format and
-Sanitize, and raw controller access reads any block on the disk regardless of
-file permissions. Enabling SMART today costs nothing; enabling it and then
-building the proxy would be effort spent for no change in blast radius.
+### What this cost
 
-So: turn it on if drive health matters more to you than a mitigation that isn't
-built. Just don't turn it on and also believe the proxy fixed something.
+Nothing today. `SYS_ADMIN` does **not** compound with the docker socket — that
+socket is already root-equivalent, so these capabilities grant the container
+nothing it could not already reach. They are alternative routes to the same
+place, not two locks on one door.
+
+The price is deferred, and it is real: **this forecloses the socket proxy.**
+That work exists to take this container *out* of the root-equivalent class, and
+`SYS_ADMIN` plus a raw NVMe controller keeps it there — NVMe admin passthrough
+can issue Format and Sanitize, and raw controller access reads any block on the
+disk regardless of file permissions.
+
+So the socket proxy is no longer a thing that can be added later on its own. It
+became a two-part job: proxy the socket *and* revert this block, accepting the
+loss of drive health, or find another way to read SMART. Building the proxy
+while this stays enabled changes the blast radius by zero, and would be the
+worst outcome — real effort, no security gain, and a false belief that the
+container is now constrained.
+
+That trade was made knowingly. Drive health on a single-disk box that holds the
+only copy of most things is worth more than a mitigation that does not exist.
+
+### Verifying it works
+
+After deploying, from forge:
+
+```bash
+docker exec beszel-agent smartctl -H /dev/nvme0
+docker exec beszel-agent smartctl -a /dev/nvme0 | grep -iE "percentage used|media.*errors|unsafe shutdowns"
+```
+
+`Percentage Used` is the wear figure against the 970 EVO Plus's 1200 TBW rating
+— write it down now so there is a baseline to compare against later. A
+`Permission denied` here means the capabilities did not apply; check
+`docker inspect beszel-agent -f '{{.HostConfig.CapAdd}}'`.
+
+The system page in the hub grows a S.M.A.R.T. section within a couple of
+minutes. If the CLI works and the UI does not, the agent is running an image
+older than the device mount — recreate rather than restart.
 
 ---
 
