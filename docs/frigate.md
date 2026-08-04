@@ -231,6 +231,67 @@ than discovering the answer when the disk is full.
 
 ---
 
+## Hikvision notes
+
+The house cameras are Hikvision. Stream URLs are:
+
+```
+rtsp://USER:PASS@CAMERA-IP:554/streaming/channels/101   # main
+rtsp://USER:PASS@CAMERA-IP:554/streaming/channels/102   # sub
+```
+
+**Give the substream a real resolution.** Hikvision ships channel 102 at
+352×240 by default — NTSC CIF, too small to detect anything at distance, and
+not even the same aspect ratio as the 4:3 main stream, so it doesn't frame the
+same scene. Raise it to **640×480** under Configuration → Video/Audio → Sub
+Stream. That matches the main stream's aspect ratio and sits close to the
+model's 320×320 input without throwing away detail.
+
+`detect.width`/`detect.height` in `config.yml` must then match whatever the
+substream actually outputs. It is a declaration, not an instruction — Frigate
+does not resize to it.
+
+**Set the I-frame interval to match the frame rate** on both streams (Hikvision
+calls it "I Frame Interval"; at 20fps set it to 20). The default is often 2×,
+which adds latency to live view and makes streams slower to start.
+
+**Check the security settings** if RTSP authentication fails despite a correct
+URL. Newer firmware needs:
+
+```
+RTSP Authentication    digest/basic
+RTSP Digest Algorithm  MD5
+WEB Authentication     digest/basic
+WEB Digest Algorithm   MD5
+```
+
+The dedicated RTSP account also needs **Remote: Live View** permission, or
+ffmpeg gets a 401 that reads like a bad URL.
+
+**If the main stream reports `hevc`**, Hikvision has defaulted it to H.265. Set
+it to H.264 in the camera rather than adding `ffmpeg.apple_compatibility: true`
+— iPhones and Safari can't play H.265 recordings without it, and H.264 avoids
+the whole question for the cost of some bitrate.
+
+### Probing a stream
+
+Frigate bundles its own ffmpeg and does **not** put it on `PATH`, so
+`docker exec frigate ffprobe ...` fails with "not found". Find it first:
+
+```bash
+FFPROBE=$(docker exec frigate sh -c 'command -v ffprobe || ls /usr/lib/ffmpeg/*/bin/ffprobe 2>/dev/null | head -1')
+
+docker exec frigate sh -c "$FFPROBE -v error -select_streams v:0 \
+  -show_entries stream=width,height,codec_name,avg_frame_rate \
+  -of default=noprint_wrappers=1 \
+  'rtsp://frigate:\$FRIGATE_RTSP_PASSWORD@CAMERA-IP:554/streaming/channels/102'"
+```
+
+The password is read from the container's own environment, so it never reaches
+your shell history.
+
+---
+
 ## Networking, and why this is never public
 
 **Frigate is LAN-only, permanently.** It sits inside the `@notlocal` guard in

@@ -158,27 +158,37 @@ snapshots:
 
 go2rtc:
   streams:
-    front_door:
-      - rtsp://viewer:{FRIGATE_RTSP_PASSWORD}@10.0.0.51:554/stream1
-    front_door_sub:
-      - rtsp://viewer:{FRIGATE_RTSP_PASSWORD}@10.0.0.51:554/stream2
+    bedroom:
+      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.64:554/streaming/channels/101
+    bedroom_sub:
+      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@10.0.0.64:554/streaming/channels/102
 
 cameras:
-  front_door:
+  bedroom:
     enabled: true
     ffmpeg:
       inputs:
-        - path: rtsp://127.0.0.1:8554/front_door_sub
+        - path: rtsp://127.0.0.1:8554/bedroom_sub
           input_args: preset-rtsp-restream
           roles: [detect]
         # Kept even with recording disabled: this is the stream the live view
         # and Home Assistant's camera entity pull from.
-        - path: rtsp://127.0.0.1:8554/front_door
+        - path: rtsp://127.0.0.1:8554/bedroom
           input_args: preset-rtsp-restream
           roles: [record]
-    # 0.17 changed camera resolution auto-detection. Some cameras misreport,
-    # and the symptom is Frigate hanging on startup rather than an error. Set
-    # these explicitly to whatever the substream actually is.
+    # These must match the SUBSTREAM (channel 102), not the main stream. This
+    # is not a downscale instruction - it tells Frigate what to expect, and a
+    # mismatch in 0.17 can hang startup rather than error.
+    #
+    # Measured 2026-08-04 with ffprobe:
+    #   101 (main)  h264  2048x1536  20fps
+    #   102 (sub)   h264   352x240   20fps   <- as shipped
+    #
+    # 352x240 is too small to detect anything at distance, and it isn't 4:3 so
+    # it doesn't even frame the same scene as the main stream. Raise the
+    # substream to 640x480 in the camera: Configuration > Video/Audio > Sub
+    # Stream. If the firmware only offers 704x576, use that and put 704/576
+    # here instead.
     detect:
       width: 640
       height: 480
