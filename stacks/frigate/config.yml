@@ -1,0 +1,192 @@
+# Frigate configuration. This file is the source of truth.
+#
+# Frigate's web UI has a config editor that writes to this file. Using it makes
+# the running config diverge from git, which is exactly the failure mode
+# docs/decisions.md rules out for every other tool. Read in the UI, change here.
+#
+# Mounted read-only in compose.yml so the UI editor cannot save over it. If you
+# want to try something quickly, edit here and redeploy - it takes ten seconds.
+#
+# Written against Frigate 0.17. The record and genai schemas both changed in
+# that release; configs copied from 0.15/0.16 guides will not load.
+
+# --- TLS: off, on purpose ---------------------------------------------------
+# Frigate's built-in NGINX serves port 8971 over HTTPS with a SELF-SIGNED
+# certificate by default. Leaving that on breaks two things at once here:
+#
+#   - Caddy's `reverse_proxy frigate:8971` speaks plain HTTP and would get a
+#     TLS handshake back, presenting as a 502.
+#   - Home Assistant's Frigate integration refuses to verify the self-signed
+#     cert and fails to connect, with an error that blames the URL.
+#
+# Caddy already terminates TLS with the real wildcard certificate, and the hop
+# from Caddy to Frigate never leaves the box. This is the documented
+# configuration for running behind a reverse proxy.
+tls:
+  enabled: false
+
+# Authentication stays ON - this only disables the transport encryption, not
+# the login. On first start Frigate prints a generated password for the `admin`
+# user into the log exactly once:
+#   docker logs frigate 2>&1 | grep -i password
+# Change it in the UI, then add a `viewer` account for the family. 0.17 also
+# supports per-camera viewer roles if you ever want that.
+
+mqtt:
+  enabled: true
+  host: mosquitto
+  port: 1883
+  # Substituted from the FRIGATE_MQTT_* environment variables injected by
+  # scripts/deploy.sh. Frigate expands any {FRIGATE_*} reference in this file.
+  user: "{FRIGATE_MQTT_USER}"
+  password: "{FRIGATE_MQTT_PASSWORD}"
+  # Distinct from Home Assistant's own client id. Two clients connecting with
+  # the same id knock each other off the broker in a loop that looks like a
+  # flapping network.
+  client_id: frigate
+
+# --- detection --------------------------------------------------------------
+# ONNX on the RTX 3080. This reverses the original iGPU decision - see
+# docs/decisions.md#amendment-frigate-moves-to-the-3080 for why.
+#
+# `type: onnx` is correct despite the image being called -tensorrt. Frigate
+# auto-detects the NVIDIA GPU and selects the CUDA execution provider; there is
+# no `device:` key to set here.
+#
+# Frigate's capacity formula is roughly:
+#     cameras ≈ (1000 / inference_speed_ms) / detect_fps
+# Watch the real inference time on the System page. A 3080 running yolov9-t at
+# 320px should land in the low single-digit milliseconds, which is far more
+# headroom than this house will ever use.
+detectors:
+  onnx:
+    type: onnx
+
+model:
+  # THIS FILE MUST EXIST BEFORE THE FIRST DEPLOY. The image ships no default
+  # ONNX model and Frigate will refuse to start without it. Build it once with
+  # the command in docs/frigate.md#step-1-build-the-detector-model.
+  path: /config/model_cache/yolov9-t-320.onnx
+  model_type: yolo-generic
+  width: 320      # must match IMG_SIZE used when the model was exported
+  height: 320
+  input_tensor: nchw
+  input_dtype: float
+  labelmap_path: /labelmap/coco-80.txt
+
+# yolov9-t was chosen over YOLO-NAS deliberately. Both run on the 3080, but
+# only yolov9 is accelerated by CUDA Graphs in 0.17 - YOLO-NAS explicitly is
+# not, and its pretrained weights also carry a non-commercial licence.
+
+# --- decoding ---------------------------------------------------------------
+# NVDEC on the same card. Decoding several 24/7 streams in software is the
+# difference between an idle CPU and a permanently busy one.
+#
+# Requires NVIDIA_DRIVER_CAPABILITIES=all in compose.yml. Without it this
+# preset fails over to software decoding without saying so.
+ffmpeg:
+  hwaccel_args: preset-nvidia
+
+# --- defaults applied to every camera ---------------------------------------
+detect:
+  enabled: true
+  fps: 5                # 5 is plenty; higher costs inference budget for nothing
+
+objects:
+  track:
+    - person
+    - car
+    - dog
+    - cat
+
+# --- recording: OFF ---------------------------------------------------------
+# Deliberate, and the single most consequential setting in this file.
+#
+# There is nowhere to put recordings yet. The 2TB NVMe is the photo library's
+# disk, and continuous recording of four cameras is over a terabyte a week -
+# Frigate filling that filesystem takes Immich's database down with it. A
+# separate spinning disk is the real answer; until it exists, recording stays off.
+#
+# What you give up while this is false:
+#   - No clips. Anywhere. Review, History and Explore will be largely empty.
+#   - Home Assistant notifications carry a snapshot image, not a video.
+#   - Nothing to export after an incident. Snapshots are single frames.
+#
+# In other words this is a live-view and alerting system right now, not a
+# recorder. Turn it on the day the disk arrives:
+#
+#   record:
+#     enabled: true
+#     motion:
+#       days: 3
+#     alerts:
+#       retain:
+#         days: 30
+#         mode: motion
+#     detections:
+#       retain:
+#         days: 14
+#         mode: motion
+#
+# Note the 0.17 schema: `continuous` and `motion` are separate top-level keys
+# under record. The old `retain: {days, mode}` shape no longer loads.
+record:
+  enabled: false
+
+# Snapshots are the whole alerting story while recording is off, so they are
+# kept longer than they otherwise would be. These are JPEGs - 30 days of them
+# across a few cameras is megabytes, not gigabytes.
+snapshots:
+  enabled: true
+  timestamp: true
+  bounding_box: true
+  retain:
+    default: 30
+
+# --- cameras ----------------------------------------------------------------
+# Template. Replace with your real cameras. Two streams per camera is the
+# standard pattern: the low-res substream feeds detection, the high-res main
+# stream is what would get recorded. Pointing detection at a 4K stream is the
+# most common way to make Frigate slow.
+#
+# Find your camera's RTSP URLs at
+# https://docs.frigate.video/configuration/camera_specific
+#
+# go2rtc restreams so each camera is connected to exactly once, no matter how
+# many things want the feed - Frigate, the iPhone app, and Home Assistant all
+# pull from go2rtc rather than hitting the camera three times.
+
+go2rtc:
+  streams:
+    front_door:
+      - rtsp://viewer:{FRIGATE_RTSP_PASSWORD}@10.0.0.51:554/stream1
+    front_door_sub:
+      - rtsp://viewer:{FRIGATE_RTSP_PASSWORD}@10.0.0.51:554/stream2
+
+cameras:
+  front_door:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/front_door_sub
+          input_args: preset-rtsp-restream
+          roles: [detect]
+        # Kept even with recording disabled: this is the stream the live view
+        # and Home Assistant's camera entity pull from.
+        - path: rtsp://127.0.0.1:8554/front_door
+          input_args: preset-rtsp-restream
+          roles: [record]
+    # 0.17 changed camera resolution auto-detection. Some cameras misreport,
+    # and the symptom is Frigate hanging on startup rather than an error. Set
+    # these explicitly to whatever the substream actually is.
+    detect:
+      width: 640
+      height: 480
+    # Draw these in the UI, then paste the coordinates back here. Without
+    # zones, a camera facing the street will alert on every passing car - and
+    # a motion detector that cries wolf gets muted and then ignored.
+    # zones:
+    #   driveway:
+    #     coordinates: 0,0,0,0,0,0
+
+version: 0.17

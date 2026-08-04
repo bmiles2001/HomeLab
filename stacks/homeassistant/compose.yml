@@ -1,0 +1,75 @@
+name: homeassistant
+
+# Home Assistant. Two jobs here: it is the iPhone app for the cameras, and it
+# is where house automation lives.
+#
+# Deploy:  ./scripts/deploy.sh homeassistant
+#
+# This is HA *Container*, not HA OS. No Supervisor, no add-on store, no
+# `hassio` integration - and therefore no Frigate add-on. That is fine, because
+# Frigate runs as its own stack here; the add-on and the container are the same
+# software packaged differently. What you do give up is HA's built-in backup
+# UI, so its data directory is your responsibility. See
+# docs/home-assistant.md#backups.
+
+services:
+  homeassistant:
+    container_name: homeassistant
+    image: ghcr.io/home-assistant/home-assistant:${HA_VERSION:-stable}
+    restart: unless-stopped
+
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+
+      # HA is a genuinely stateful application - it writes .storage/ constantly
+      # and that JSON, not YAML, is where most of its real configuration ends
+      # up. A bind mount rather than a named volume so it can be backed up with
+      # the same tools as everything else on the NVMe.
+      - ${HA_CONFIG:-/srv/homeassistant/config}:/config
+
+      # Mounted over the top, read-only, same trick as Frigate's config.yml.
+      # HA never writes configuration.yaml itself, so this costs nothing and
+      # keeps the part of HA's config that matters in git.
+      #
+      # It does NOT cover automations built in the UI - those go to
+      # automations.yaml inside the data directory. That is a real gap in "git
+      # is the source of truth" and it is written down rather than pretended
+      # away: docs/decisions.md#home-assistant-partially-escapes-git.
+      - ./configuration.yaml:/config/configuration.yaml:ro
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+    networks:
+      - proxy    # reached by caddy at homeassistant:8123
+      - iot      # reaches mosquitto
+
+    # No published ports, and no host networking.
+    #
+    # Most HA-in-Docker guides tell you to use `network_mode: host`. That is
+    # for mDNS and SSDP discovery of Chromecasts, Sonos, HomeKit devices and
+    # the like, which need broadcast traffic that a bridge network does not
+    # carry. It would also mean HA publishing 8123 straight onto the LAN,
+    # bypassing Caddy and the two rules this repo is built on.
+    #
+    # The tradeoff, stated plainly: local discovery of broadcast-based devices
+    # will not work. Anything reachable by IP - Frigate, cameras, most cloud
+    # integrations - is unaffected. If you later buy something that can only
+    # be found by discovery, the fix is a macvlan interface for HA, not host
+    # networking. See docs/home-assistant.md#what-bridge-networking-costs-you.
+
+    healthcheck:
+      # HA answers /manifest.json before it has finished loading integrations,
+      # which is the point - this checks the web server is up, not that every
+      # integration succeeded.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8123/manifest.json >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s   # a cold start on first run genuinely takes minutes
+
+networks:
+  proxy:
+    external: true
+  iot:
+    external: true

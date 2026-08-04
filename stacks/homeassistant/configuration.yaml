@@ -1,0 +1,53 @@
+# Home Assistant configuration. Source of truth; mounted read-only.
+#
+# HA does not write this file, so keeping it in git costs nothing. Automations
+# built in the UI are a different story - they land in automations.yaml inside
+# the data directory and are not covered by this repo. See
+# docs/decisions.md#home-assistant-partially-escapes-git.
+
+# Everything most people expect HA to have: the UI, logbook, history, energy,
+# mobile app support, and the automation editor.
+default_config:
+
+http:
+  # MANDATORY behind Caddy. Without both of these, HA sees every request as
+  # coming from the proxy's container address and refuses to log anyone in -
+  # the browser shows "400: Bad Request" and the log says
+  # "A request from a reverse proxy was received from 172.18.x.x, but your
+  # HTTP integration is not set-up for reverse proxies".
+  #
+  # It is not only a login problem: without it the login rate limiter buckets
+  # the whole house under one address, and every entry in the audit log claims
+  # to come from Caddy.
+  use_x_forwarded_for: true
+
+  # The `proxy` network's subnet, pinned in bootstrap.sh. A CIDR rather than an
+  # address because container IPs change on every restart. If bootstrap.sh ever
+  # warns that the proxy network has a different subnet, this line and
+  # IMMICH_TRUSTED_PROXIES both need updating.
+  trusted_proxies:
+    - 172.18.0.0/16
+
+  # Left off deliberately. HA's `ip_ban_enabled` writes a permanent ban file
+  # keyed on IP; with the whole house behind one router that is a good way to
+  # lock the family out over a fat-fingered password. The Caddyfile's LAN guard
+  # is the real control here.
+  ip_ban_enabled: false
+
+# UI-managed. These files live in the data directory, not in git.
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+# --- what is deliberately NOT here ------------------------------------------
+#
+# MQTT and Frigate are both set up through the UI rather than YAML, because
+# both store credentials and options in .storage/ regardless of what this file
+# says - configuring them here would create a second, misleading source of
+# truth. The steps are in docs/home-assistant.md#first-run.
+#
+# In short:
+#   Settings > Devices & Services > Add Integration > MQTT
+#     broker: mosquitto   port: 1883   username/password from Infisical
+#   then the Frigate integration, installed via HACS, pointed at
+#     http://frigate:8971

@@ -237,12 +237,86 @@ Camera credentials live in Infisical under `/frigate` and are referenced by
 variable inside `config.yml`, so camera URLs stay in git without their
 passwords. The cameras themselves belong on a VLAN with no internet route.
 
-## Still open
+## Amendment: Frigate moves to the 3080
 
-- **Frigate recording budget.** Continuous recording of four cameras for a week
-  is over a terabyte — most of the NVMe, competing with the photo library it was
-  bought for. `record.retain.mode: motion` is the interim answer; a dedicated
-  spinning disk for recordings is the real one.
+Reverses [the two GPUs get one workload each](#the-two-gpus-get-one-workload-each).
+Both ML workloads now run on the RTX 3080; the UHD 770 does nothing.
+
+The original split was defensible — a continuous workload and a bursty one
+shouldn't compete — but it optimised for the wrong thing. The enhanced
+detection the 3080 makes possible is the reason for running Frigate at all
+rather than buying an appliance NVR, and a yolov9 model on an Ampere card is a
+different class of accuracy from SSDLite MobileNet on an iGPU. Trading that
+away to avoid contention that hasn't happened yet was premature.
+
+What the original reasoning got right, and what to watch: a large Immich import
+**will** visibly raise Frigate's inference time. Not stop it — CUDA
+time-slices — but if detection looks slow, check whether Immich is busy before
+looking anywhere else. That's the cost, and it's paid only during imports.
+
+Fully reversible in two lines of `config.yml` plus the `/dev/dri` device, and
+[frigate.md](frigate.md#sharing-the-3080-with-immich) says how.
+
+Consequence worth noting: the iGPU is now idle and is the natural home for
+Immich's video transcoding, which currently isn't configured to use anything.
+
+## Recording off until there is a disk for it
+
+Frigate ships here with `record.enabled: false`. This is a live-view and
+alerting system, not a recorder, and calling it anything else would be
+self-deception.
+
+Continuous recording of four cameras for a week is over a terabyte — most of
+the NVMe, on the disk the photo library was bought for. Frigate filling that
+filesystem takes Immich's Postgres down with it, so the failure isn't "no
+footage," it's "no photo server." Motion-only retention reduces that without
+bounding it.
+
+The right answer is a dedicated spinning drive: cheap per TB, good at
+sequential writes, and it isolates the failure. Until one exists, off is more
+honest than a retention policy tuned to a disk that's already spoken for.
+`FRIGATE_MEDIA` exists so that day is a one-line change.
+
+## MQTT gets its own network, not `proxy`
+
+Mosquitto is on an `iot` network shared with exactly Frigate and Home
+Assistant, and is not on `proxy` at all.
+
+MQTT has a flat permission model — any client that authenticates can subscribe
+to `#` and read every message on the broker, including camera event payloads.
+Putting it on `proxy` would make it resolvable and reachable by every container
+in the house for no benefit, since it has no web interface for Caddy to route
+to in the first place.
+
+`iot` is created `--internal`, so mosquitto has no route off the box. Frigate
+and Home Assistant keep theirs through `proxy`.
+
+## Home Assistant partially escapes git
+
+An honest exception to [git is the source of truth](#git-is-the-source-of-truth-with-no-ui-allowed-to-compete),
+recorded rather than hidden.
+
+`configuration.yaml` is in this repo and mounted read-only, same as Frigate's
+config. But that is the small part of HA's configuration. The rest — every
+integration's setup and credentials, users, tokens, devices — lives in
+`.storage/` as JSON that HA writes constantly and that has no supported
+hand-edited form. Automations built in the UI land in `automations.yaml` in the
+data directory, also outside git.
+
+There is no version of HA where this isn't true; it is a stateful application,
+not a config file with a daemon attached. Pretending otherwise would mean
+either forbidding the UI — which defeats the point of HA — or a repo that
+claims to describe a system it does not.
+
+What follows from that: `/srv/homeassistant/config` is real state and needs a
+real backup, which it does not yet have. See
+[home-assistant.md](home-assistant.md#backups).
+
+## Still open
+- **A backup for Home Assistant's data directory.** HA Container has no backup
+  UI, and `/srv/homeassistant/config/.storage` holds every credential HA has.
+  Nothing covers it today.
+- **Immich transcoding on the now-idle iGPU.** Free performance, unclaimed.
 - **Backups.** The photo library will exist in exactly one place on one NVMe.
   `rclone` to OneDrive is the intended answer; until it runs, this is the
   largest unmitigated risk in the build.

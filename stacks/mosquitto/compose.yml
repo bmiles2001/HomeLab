@@ -1,0 +1,99 @@
+name: mosquitto
+
+# The MQTT broker Frigate and Home Assistant talk over.
+#
+# Deploy:  ./scripts/deploy.sh mosquitto
+#
+# Deploy this BEFORE frigate and homeassistant. Both retry a missing broker
+# forever rather than failing, so the symptom of getting the order wrong is
+# not an error - it is Home Assistant showing no cameras and nobody knowing why.
+#
+# This stack is on `iot` and deliberately NOT on `proxy`. There is no web
+# interface to reach, so there is no reason for it to be resolvable by every
+# other container in the house. MQTT is an unencrypted protocol with a flat
+# permission model: any client that authenticates can subscribe to `#` and read
+# every message, including camera event payloads. Keeping the blast radius to
+# three containers is most of the security story here.
+
+services:
+  mosquitto:
+    container_name: mosquitto
+    image: docker.io/library/eclipse-mosquitto:${MOSQUITTO_VERSION:-2}
+    restart: unless-stopped
+
+    # Mosquitto 2.x has no environment-variable interpolation in its config
+    # file, and it will not accept a plaintext password anywhere. The password
+    # file has to be generated from the injected secret at startup.
+    #
+    # `-b` takes the password on the command line, which would normally be a
+    # mistake - but this is the container's own PID 1 inside its own namespace,
+    # and the value came from Infisical rather than from disk. What lands on
+    # the volume is the bcrypt hash, not the password.
+    #
+    # $$ escapes the $ so compose passes it through to the shell rather than
+    # trying to interpolate it itself.
+    # Overriding the entrypoint skips the image's own startup script, which is
+    # what normally fixes ownership and drops privileges. Both therefore have
+    # to happen here: mosquitto_passwd writes the file 0600 root:root, and the
+    # broker - which drops to the `mosquitto` user per mosquitto.conf - then
+    # cannot read its own password file. The error is "Unable to open pwfile"
+    # and it looks like a config problem rather than a permissions one.
+    #
+    # Only the two writable paths are chowned. /mosquitto/config/mosquitto.conf
+    # is a read-only bind mount, so a recursive chown over the directory fails
+    # and takes the whole chain down with it.
+    # List form with a literal block scalar, deliberately. The string form of
+    # `command:` is word-split by compose before the container sees it, which
+    # turns every quote and backslash in here into a guessing game. A list
+    # entrypoint is passed through untouched.
+    #
+    # $$ escapes the $ so compose passes it to the shell rather than
+    # interpolating it at deploy time - the value must be read inside the
+    # container, not baked into the container's config where `docker inspect`
+    # would show it.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        mosquitto_passwd -c -b /mosquitto/config/passwd "$$MQTT_USER" "$$MQTT_PASSWORD"
+        chown mosquitto:mosquitto /mosquitto/config/passwd /mosquitto/data
+        exec mosquitto -c /mosquitto/config/mosquitto.conf
+
+    environment:
+      MQTT_USER: ${MQTT_USER:?not injected - deploy via scripts/deploy.sh}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?not injected - deploy via scripts/deploy.sh}
+      TZ: ${TZ:-America/Chicago}
+
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      # The generated passwd file lands here. Named rather than bind-mounted
+      # so a bcrypt hash never sits in the repo directory waiting to be
+      # committed by an over-eager `git add -A`.
+      - mosquitto_config:/mosquitto/config
+      # Retained messages and queued QoS>0 messages survive a restart. Small.
+      - mosquitto_data:/mosquitto/data
+
+    networks:
+      - iot
+
+    # No published ports, and no `proxy` network. Nothing outside these three
+    # containers has any business speaking MQTT.
+
+    healthcheck:
+      # mosquitto_sub with -E exits as soon as the subscription is confirmed,
+      # which proves the broker is accepting authenticated connections rather
+      # than merely that the process is alive.
+      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -p 1883 -u \"$$MQTT_USER\" -P \"$$MQTT_PASSWORD\" -t healthcheck -E -W 3 || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  mosquitto_config:
+  mosquitto_data:
+
+networks:
+  iot:
+    external: true

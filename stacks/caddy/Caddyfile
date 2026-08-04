@@ -151,6 +151,47 @@ photos.{env.DOMAIN} {
 		}
 	}
 
+	# --- security.<domain> - Frigate ---------------------------------------
+	# 8971 is Frigate's *authenticated* UI. Port 5000 on the same container is
+	# an unauthenticated admin port that exists for proxies which handle auth
+	# themselves; this one does not, so 8971 is the only correct upstream.
+	# Getting that wrong publishes the cameras to anyone on the LAN with no
+	# password at all.
+	#
+	# This hostname must never leave the LAN-only block. An NVR is the
+	# worst-case-if-breached service in the house - see
+	# docs/decisions.md#frigate-is-lan-only-and-that-is-not-a-for-now.
+	#
+	# Frigate sets its session cookie against the host it was reached by, so it
+	# needs the original Host header rather than the container name. Caddy
+	# passes Host through unchanged by default, which is why nothing is set
+	# here - do not "fix" this by adding header_up Host.
+	@frigate host security.{env.DOMAIN}
+	handle @frigate {
+		reverse_proxy frigate:8971 {
+			# Live view uses WebSockets and MSE. Caddy upgrades these on its
+			# own; what it does not do by default is wait long enough. A live
+			# stream is one long-lived response, and the default flush
+			# behaviour makes it stutter on iPhones in particular.
+			flush_interval -1
+		}
+	}
+
+	# --- home.<domain> - Home Assistant -------------------------------------
+	# The companion iPhone app points here. It talks the same HTTP/WebSocket
+	# API as the browser, so there is nothing app-specific to configure.
+	#
+	# HA rejects proxied requests unless it has been told this proxy is
+	# trusted. That lives in stacks/homeassistant/configuration.yaml under
+	# http.trusted_proxies, and a mismatch presents as "400: Bad Request" at
+	# login rather than as a proxy error here.
+	@homeassistant host home.{env.DOMAIN}
+	handle @homeassistant {
+		reverse_proxy homeassistant:8123 {
+			flush_interval -1
+		}
+	}
+
 	# --- template: copy this block for each new app ------------------------
 	# @myapp host myapp.{env.DOMAIN}
 	# handle @myapp {

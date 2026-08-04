@@ -14,6 +14,9 @@ stacks/
   infisical/          secrets store. The only stack with a real .env file.
   caddy/              reverse proxy. The only stack that publishes ports.
   immich/             photo server. The only stack with a public hostname.
+  mosquitto/          mqtt broker. No web ui, not on the proxy network.
+  frigate/            camera nvr. Detection on the 3080; recording is off.
+  homeassistant/      the iphone app for the cameras, and house automation.
 scripts/
   deploy.sh           deploy a stack with secrets injected from Infisical
   infisical-backup.sh nightly dump of the secrets database
@@ -23,6 +26,9 @@ docs/
   immich-deploy.md           step-by-step: secrets, deploy, first login, iPhones
   onedrive-mirror.md         rclone setup, the headless auth dance, restoring
   photo-app-comparison.md    why Immich and not the others
+  frigate.md                 detector model, the recording decision, first run
+  frigate-punchlist.md       ordered deploy steps. delete when ticked off
+  home-assistant.md          hacs, the frigate integration, notifications
   secrets.md                 Infisical setup and the daily workflow
   remote-access.md           editing from your main PC
   public-access.md           forwarding 443, DDNS, and what stays private
@@ -78,6 +84,14 @@ cd ../.. && ./scripts/deploy.sh caddy
 
 # 3. Apps
 ./scripts/deploy.sh immich
+
+# 4. Cameras. Order matters - both frigate and homeassistant retry a missing
+#    broker forever rather than failing, so getting it wrong looks like
+#    "home assistant has no cameras" rather than like an error.
+#    Frigate also needs a detector model in place first - see docs/frigate.md.
+./scripts/deploy.sh mosquitto
+./scripts/deploy.sh frigate
+./scripts/deploy.sh homeassistant
 ```
 
 First Caddy start takes a minute or two while the wildcard certificate is
@@ -207,6 +221,34 @@ when you need it.
 
 ---
 
+## Cameras
+
+Three stacks, one system. Frigate does detection and holds the cameras;
+mosquitto carries events between them; Home Assistant is the part the family
+touches.
+
+| | Where | Who uses it |
+|---|---|---|
+| Frigate | `https://security.brent-miles.com` | you, for setup and debugging |
+| Home Assistant | `https://home.brent-miles.com` + iPhone app | everyone |
+
+The iPhone app is the whole reason Home Assistant is here. Frigate has no app —
+its web UI installs as a PWA and that's it — so HA's companion app is what puts
+live views and push notifications on the family's phones.
+
+Two things to know before deploying, both covered in
+[docs/frigate.md](docs/frigate.md):
+
+1. **Frigate will not start without a detector model**, and there isn't one in
+   the image. Build it once, before the first deploy.
+2. **Recording is off.** This is live view and alerting only until there's a
+   disk for it. Notifications carry a still image, not a clip.
+
+Both hostnames are inside the Caddyfile's LAN-only block and stay there.
+An NVR is the worst-case-if-breached service in the house.
+
+---
+
 ## Backups, ranked by how much it hurts to lose
 
 | Thing                       | Where                       | Covered by                  |
@@ -273,9 +315,14 @@ Watch it with `du -sh /srv/immich/data/*` occasionally.
   [docs/onedrive-mirror.md](docs/onedrive-mirror.md) §8. Do it while the library
   is small.
 - **A family dashboard.** Homepage, when there are enough apps to warrant it.
-- **Frigate** (camera NVR) and **ddns**. Both were built and are in git history;
-  they were removed from the working tree to keep the repo describing only what
-  is actually running. Restore either with `git checkout <commit> -- stacks/<name>`.
+- **ddns**. Built and in git history; removed from the working tree to keep the
+  repo describing only what is actually running. Restore with
+  `git checkout <commit> -- stacks/ddns`.
+- **Frigate recordings.** Detection and live view are configured; recording is
+  deliberately off until there is a disk that isn't the photo library's. See
+  [docs/frigate.md](docs/frigate.md#recording-is-off-and-what-that-costs).
+- **A backup for Home Assistant.** Its data directory holds every credential HA
+  has and nothing covers it. The sharpest edge of choosing HA Container.
 
 Komodo is no longer on this list — it is **rejected**, not deferred. See
 [docs/decisions.md](docs/decisions.md#komodo--rejected).
