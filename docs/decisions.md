@@ -488,6 +488,60 @@ the trade: a container actually running on an empty secret. It reads the same
 `required_vars()` table through `deploy.sh --required-vars`, so there is one
 copy of the list and not two.
 
+## Single-file bind mounts need a recreate, not a reload
+
+Not a decision so much as a trap that this repo's own workflow walks into, found
+the hard way when `unifi.brent-miles.com` returned nothing while every container
+was up and healthy and Caddy could reach the upstream by name perfectly well.
+
+Docker bind-mounts a **single file** by inode, not by path. Git does not edit
+files in place — it writes a new file and renames it over the old name, which
+produces a new inode. So after `git pull` on forge, a running container is
+still bound to the file that existed when it started, and there is no
+indication anywhere that this has happened:
+
+```
+grep -c unifi stacks/caddy/Caddyfile              # 5   - on the host
+docker exec caddy grep -c unifi /etc/caddy/Caddyfile  # 0   - in the container
+```
+
+`caddy reload` makes this worse rather than better. It re-reads the path, gets
+the stale inode, adapts it without error, and logs success. The one command
+that looks like it should prove the fix worked is the command that convinces
+you nothing is wrong.
+
+This has nothing to do with `:ro`, and the mount is not a copy — a live edit to
+the same inode (`$EDITOR`, `sed -i` without `--follow-symlinks`, `>>`) does
+show up immediately. It is specifically **replacement** that breaks the link,
+and replacement is what git, and most editors' atomic saves, do.
+
+Five files in this repo are mounted this way, and every one of them is
+somebody's source of truth:
+
+| File                                     | Container      |
+| ---------------------------------------- | -------------- |
+| `stacks/caddy/Caddyfile`                 | `caddy`        |
+| `stacks/frigate/config.yml`              | `frigate`      |
+| `stacks/homeassistant/configuration.yaml` | `homeassistant` |
+| `stacks/mosquitto/mosquitto.conf`        | `mosquitto`    |
+| `stacks/unifi/init-mongo.sh`             | `unifi-db`     |
+
+**The rule: after a pull that touched any of those, recreate the container.**
+Not restart — restart keeps the same mounts. Recreate.
+
+```bash
+./scripts/deploy.sh caddy -- --force-recreate
+```
+
+The tempting fix is to mount the parent directory instead of the file, since
+directory mounts resolve names on each access and do not have this problem.
+That is rejected for the same reason the mounts are read-only in the first
+place: `stacks/caddy/` also contains `compose.yml`, and Frigate's directory
+mount would hand its web UI a writable config again, which is exactly the drift
+[git is the source of truth](#git-is-the-source-of-truth-with-no-ui-allowed-to-compete)
+exists to prevent. A recreate is cheap; a config store that competes with the
+repo is not.
+
 ## Still open
 - **A backup for Home Assistant's data directory.** HA Container has no backup
   UI, and `/srv/homeassistant/config/.storage` holds every credential HA has.

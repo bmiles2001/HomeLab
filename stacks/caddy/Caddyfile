@@ -16,6 +16,17 @@
 #
 #   docker exec caddy caddy reload --config /etc/caddy/Caddyfile
 #
+# THAT IS ONLY ENOUGH IF YOU EDITED THIS FILE IN PLACE. After a `git pull`,
+# reload silently re-reads the OLD content and reports success. This file is
+# bind-mounted as a single file, which Docker binds by inode; git replaces
+# files by rename rather than rewriting them, so the container keeps pointing
+# at the inode it started with. Verify, then recreate if it lies to you:
+#
+#   docker exec caddy grep -c unifi /etc/caddy/Caddyfile   # 0 after a pull?
+#   ./scripts/deploy.sh caddy -- --force-recreate
+#
+# See docs/decisions.md#single-file-bind-mounts-need-a-recreate-not-a-reload.
+#
 # LAN apps need no DNS record and no certificate - the wildcard covers both.
 # A public app needs its own A record and a DDNS entry; see
 # docs/public-access.md.
