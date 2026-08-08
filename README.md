@@ -12,7 +12,8 @@ one command fixes it.
 bootstrap.sh          run once on a fresh machine - network, dirs, sanity checks
 stacks/
   infisical/          secrets store. The only stack with a real .env file.
-  caddy/              reverse proxy. The only stack that publishes ports.
+  caddy/              reverse proxy. Publishes 80/443; everything http is
+                      reached through it.
   immich/             photo server. The only stack with a public hostname.
   mosquitto/          mqtt broker. No web ui, not on the proxy network.
   frigate/            camera nvr. Detection on the 3080; recording is off.
@@ -20,6 +21,8 @@ stacks/
   beszel/             monitoring. hub on the proxy network; its agent is the
                       only other container on the host network, and the only
                       one holding the docker socket.
+  satisfactory/       game server. the only stack besides caddy that publishes
+                      ports, because the game speaks raw udp.
 scripts/
   deploy.sh           deploy a stack with secrets injected from Infisical
   compose.sh          compose commands that need real secret values (config,
@@ -38,6 +41,7 @@ docs/
   home-assistant.md          hacs, the frigate integration, notifications
   beszel.md                  the two-phase first deploy, the docker socket
                              tradeoff, disks and gpu
+  satisfactory.md            claiming the server, the three ports, auto pause
   secrets.md                 Infisical setup and the daily workflow
   remote-access.md           editing from your main PC
   public-access.md           forwarding 443, DDNS, and what stays private
@@ -64,18 +68,25 @@ The ordered cutover, and the checks that prove the guard works, are in
 host, deploy. SSH in to read logs and debug, not to change files. The moment
 you fix something directly on the server, this repo starts lying to you.
 
-**2. Only Caddy publishes ports.** No exceptions. Every other stack joins the
-shared `proxy` network and is reached by container name. This is not just
-tidiness: Docker writes its iptables rules ahead of UFW's, so a published port
-is reachable from the LAN no matter what `ufw status` claims. One container
-publishing ports is a decision; two is an accident.
+**2. Only Caddy publishes ports**, and one named exception. Every other stack
+joins the shared `proxy` network and is reached by container name. This is not
+just tidiness: Docker writes its iptables rules ahead of UFW's, so a published
+port is reachable from the LAN no matter what `ufw status` claims.
 
-`bootstrap.sh` check 6 enforces this by name. If a stack ever genuinely needs a
-host port — a protocol a reverse proxy cannot carry — bind it to the LAN address
-explicitly (`10.0.0.4:8554:8554`) rather than to all interfaces, and write down
-why in [docs/decisions.md](docs/decisions.md).
+`bootstrap.sh` check 6 enforces this by name, against an allow-list. The bar for
+being on that list is **a protocol a reverse proxy physically cannot carry** —
+not "this was easier". If a stack needs a host port for any lesser reason, bind
+it to the LAN address explicitly (`10.0.0.4:8554:8554`) rather than to all
+interfaces, which never trips the check in the first place.
 
-There is one deliberate near-exception: Beszel's agent is on the **host**
+The exception is **`satisfactory`**, which publishes `7777/udp`, `7777/tcp` and
+`8888/tcp` to all interfaces and is forwarded from the router. The game speaks
+raw UDP; there is no configuration of Caddy that carries it. The cost — including
+what check 6 stops proving once the list has two entries — is written out in
+[docs/decisions.md](docs/decisions.md#satisfactory-publishes-ports-and-caddy-cannot-help)
+and [docs/satisfactory.md](docs/satisfactory.md#exposure).
+
+There is also a deliberate near-exception: Beszel's agent is on the **host**
 network, because host interface statistics cannot be read from a bridge. It
 still publishes no port — it listens on a unix socket — so check 6 stays clean
 without an allow-list entry. See [docs/beszel.md](docs/beszel.md#the-two-things-that-are-unusual-about-this-stack).

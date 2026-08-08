@@ -583,6 +583,57 @@ NVMe, most of it has no second copy, and `storage-expansion.md` already records
 this box running out of disk once without anything noticing. A mitigation that
 exists beats one that is written down. Drive health won.
 
+## Satisfactory publishes ports, and Caddy cannot help
+
+Decided 2026-08-08, and it reopens an allow-list that had been closed.
+
+`bootstrap.sh` check 6 existed to enforce one sentence: apps join `proxy` and are
+reached by container name, and `caddy` is the only stack that publishes a host
+port. That list had been back down to one name after the DDNS controller was
+removed, with a note that a second entry was a decision to document rather than a
+quick fix. This is that document.
+
+The reason is not convenience. Satisfactory's game traffic is **raw UDP on
+7777**. Caddy is an HTTP reverse proxy; there is no configuration of it that
+carries this, because there is no HTTP request to route. The choice is between
+publishing the port and not running the server. The DDNS controller that used to
+hold the exception was the same shape — raw UDP a proxy cannot carry — which is
+the bar for anything that gets added here in future. "This was easier" is not.
+
+**What this actually exposes.** Three ports on the WAN address with nothing in
+front of them:
+
+| Port | Protocol | Carries | Guarded by |
+|---|---|---|---|
+| 7777 | UDP | the game | the game's session handshake |
+| 7777 | TCP | reliable messaging | same |
+| 8888 | TCP | the server API | the admin/claim password, over self-signed TLS |
+
+That is a C++ game server, written by a game studio, listening to the open
+internet — a meaningfully different risk class from Immich behind Caddy and
+CrowdSec, and it is being accepted knowingly. Two things bound it: the container
+is not on `proxy`, so a compromise of it reaches no other stack over the network,
+and it holds no docker socket and no elevated capabilities, unlike
+[Beszel's agent](#and-it-holds-the-docker-socket-which-is-the-actual-cost). The
+blast radius is one container, one bind mount, and outbound internet.
+
+The alternative was Tailscale, and it was rejected for the same reason it was
+rejected for Immich: it requires every participant to install something and hold
+an account. A game server whose players are "whoever is around this weekend" does
+not survive that. The difference from Immich is that here the fallback is worse,
+not better — Immich at least has its own login.
+
+**What the check no longer buys.** With two names in `ALLOWED_PUBLISHERS`, it
+verifies the set of publishing *containers*, not the set of published *ports*. A
+fourth port appearing on `satisfactory` passes silently. `ufw status` and the
+router's forward list are now the things to read after any change, and that is a
+real reduction in what bootstrap.sh proves.
+
+**The reversal, if it comes.** Take the entry back out of `ALLOWED_PUBLISHERS`,
+drop the router forwards, and run it LAN-only or over Tailscale. Nothing about
+the stack's data or config depends on being public — see
+[satisfactory.md](satisfactory.md#exposure).
+
 ## Still open
 - **A backup for Home Assistant's data directory.** HA Container has no backup
   UI, and `/srv/homeassistant/config/.storage` holds every credential HA has.
@@ -598,6 +649,10 @@ exists beats one that is written down. Drive health won.
 - **Backups.** The photo library will exist in exactly one place on one NVMe.
   `rclone` to OneDrive is the intended answer; until it runs, this is the
   largest unmitigated risk in the build.
+- **Off-box copies of the Satisfactory saves.** `/srv/satisfactory/backups` is
+  on the same NVMe as `/srv/satisfactory/saved`, so it covers a corrupt save and
+  nothing else. The same gap Home Assistant and Beszel have, with lower stakes.
+  See [satisfactory.md](satisfactory.md#backups).
 - **Remote access for administration.** Tailscale remains the low-risk answer
   and is now complementary rather than an alternative — public 443 for Immich,
   Tailscale for everything that should never be public.

@@ -1,0 +1,156 @@
+name: satisfactory
+
+# Satisfactory dedicated server.
+#
+# Deploy:  ./scripts/deploy.sh satisfactory
+#
+# Upstream: https://github.com/wolveix/satisfactory-server
+# Runbook:  docs/satisfactory.md
+#
+# Required secrets are validated by deploy.sh, not by ${VAR:?} guards in this
+# file, so plain `docker compose down/logs/ps` works in this directory. This
+# stack has no secrets at all - its case in required_vars() is deliberately
+# empty rather than absent. Server access is controlled by the in-game claim
+# and admin password, which live in the game's own config, not here.
+#
+# FOUR THINGS ARE UNUSUAL ABOUT THIS STACK, and all four are deliberate:
+#
+#   1. IT PUBLISHES PORTS, and Caddy is not involved. Satisfactory speaks raw
+#      UDP on 7777; a reverse proxy cannot carry that. This is the second and
+#      only other exception to "caddy is the only stack that publishes ports",
+#      and bootstrap.sh check 6 has an allow-list entry to match. See
+#      docs/decisions.md#satisfactory-publishes-ports-and-caddy-cannot-help.
+#   2. IT IS REACHABLE FROM THE INTERNET on those ports, with no auth in front
+#      of them. Not "LAN-only for now" - the whole point is friends joining.
+#      What that does and does not expose is in docs/satisfactory.md#exposure.
+#   3. IT IS NOT ON THE `proxy` NETWORK. Nothing about it is HTTP, so there is
+#      nothing for Caddy to route. It gets the stack's own default bridge.
+#   4. IT DOWNLOADS ~20GB ON FIRST START and takes a while to come up. That is
+#      SteamCMD fetching the game, not a hang. See the runbook.
+#
+# The single most important setting is NOT in this file: turn on Auto Pause in
+# the in-game Server Manager after claiming the server. Without it an empty
+# server simulates the whole factory forever and burns a core for nobody.
+
+services:
+  satisfactory:
+    container_name: satisfactory
+    hostname: satisfactory
+
+    # Pinned rather than :latest, same as every other stack here. Upstream
+    # ships new tags on game updates; bump this deliberately and read the
+    # release notes first, because a server version ahead of everyone's client
+    # locks the whole group out until Steam pushes the client update.
+    #
+    # Note this pins the CONTAINER, not the game. The game updates itself on
+    # every container start regardless (see SKIPUPDATE below), so pinning here
+    # buys reproducible plumbing, not a frozen game version.
+    image: docker.io/wolveix/satisfactory-server:${SATISFACTORY_VERSION:-latest}
+    restart: unless-stopped
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+      # The server drops to this user before running the game, and every file
+      # under /config is written as it. Mismatch with the owner of
+      # /srv/satisfactory is the cause of essentially every "permission denied"
+      # in upstream's issue tracker. bootstrap.sh creates the directory owned
+      # by 1000:1000 to match.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+
+      MAXPLAYERS: ${SATISFACTORY_MAXPLAYERS:-4}
+
+      # Stable branch. `true` puts the server on Experimental, which requires
+      # every client to also be on Experimental - a group-wide decision, not a
+      # server-side toggle. Leave it alone unless everyone has agreed.
+      STEAMBETA: "false"
+
+      # Defaults, written out because they are the knobs worth knowing exist:
+      #
+      # AUTOSAVENUM=5           rotating autosaves kept
+      # MAXTICKRATE=30          sim tick rate ceiling
+      # MAXOBJECTS=2162688      object limit; raise only if the log complains
+      # SERVERSTREAMING=true    asset streaming; leave on
+      # TIMEOUT=30              client timeout in seconds
+      # DISABLESEASONALEVENTS   set true only if you dislike FICSMAS
+      #
+      # SKIPUPDATE=false is the default and stays that way: the game updates
+      # itself on every container start, which is what you want on a box that
+      # reboots for kernel patches. The cost is a slower start after an update.
+      #
+      # VMOVERRIDE skips the CPU model check. forge is a bare-metal i9-12900KS,
+      # so it is not needed and must stay off - if that check ever fires, the
+      # answer is to read why, not to silence it.
+
+      # Only if the ports below are ever changed. The game needs to know its
+      # own ports, so a host-side remap alone would produce a server that
+      # listens on one port and advertises another.
+      # SERVERGAMEPORT: 7777
+      # SERVERMESSAGINGPORT: 8888
+
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+
+      # One bind mount holding four things, and only two of them matter:
+      #
+      #   saved/     THE SAVES, blueprints and server config. This is the only
+      #              irreplaceable directory on this stack.
+      #   backups/   automatic copies of saved/, made when the container starts
+      #   gamefiles/ ~20GB of game install. Outside the container on purpose so
+      #              a rebuild does not redownload it.
+      #   logs/      steam's logs, emptied on start unless LOG=true
+      #
+      # Bind mount rather than a named volume so it lands on /srv with
+      # everything else worth backing up, and so saves can be copied off with
+      # plain cp. See docs/storage-expansion.md#layout.
+      #
+      # backups/ is on the SAME DISK as saved/, so it is protection against a
+      # corrupt save, not against losing the drive. Nothing here is off-box
+      # today - see docs/satisfactory.md#backups.
+      - ${SATISFACTORY_DATA:-/srv/satisfactory}:/config
+
+    ports:
+      # All three are required, and the FAQ's most common report is someone
+      # forwarding one of them:
+      #
+      #   7777/udp  the game itself. This is the one a reverse proxy cannot
+      #             carry, and the reason this stack publishes at all.
+      #   7777/tcp  reliable messaging alongside the UDP stream
+      #   8888/tcp  the server API - the in-game Server Manager talks to this
+      #             to claim, configure and join. Self-signed TLS, so clients
+      #             get a certificate prompt on first connect.
+      #
+      # Published on all interfaces deliberately, NOT bound to 10.0.0.4, so
+      # forwarded WAN traffic reaches them. That is what makes this the
+      # documented exception rather than a stray - bootstrap.sh check 6 knows
+      # about it by name.
+      - '7777:7777/udp'
+      - '7777:7777/tcp'
+      - '8888:8888/tcp'
+
+    # 16G ceiling, 8G held back for it. Upstream suggests 8-16G and the ceiling
+    # is what stops a late-game save taking the box down: forge has 32GB total
+    # and Immich, Frigate, Home Assistant and Beszel all live on it. An
+    # unbounded game server would win an OOM fight against the cameras.
+    #
+    # Compose V2 honours these outside Swarm. If the server starts getting
+    # OOM-killed mid-session (exit code 137 in `docker inspect`), that is the
+    # signal to raise the limit - but check what else is resident first, and
+    # read docs/satisfactory.md#when-16g-is-not-enough before going past 20G.
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          memory: 8G
+
+    # No healthcheck. Upstream ships none, and the obvious substitutes are
+    # wrong: the API on 8888 answers long before the save has finished loading,
+    # so a check against it would report healthy on a server nobody can join.
+    # Nothing in this repo restarts on unhealthy anyway - Beszel alerting on
+    # the container being gone is the real signal.
+
+    # No networks: block. This stack gets its own default bridge, which gives
+    # it outbound internet for SteamCMD and no route to any other stack. It is
+    # deliberately NOT on `proxy` - see note 3 at the top of this file.

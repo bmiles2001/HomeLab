@@ -89,7 +89,8 @@ fi
 # --- 4. data directories ----------------------------------------------------
 for d in /srv/immich/data /srv/caddy /srv/infisical /srv/backups/infisical \
          /srv/frigate/media /srv/frigate/models /srv/homeassistant/config \
-         /srv/beszel/data /srv/beszel/agent /srv/beszel/socket /srv/.beszel; do
+         /srv/beszel/data /srv/beszel/agent /srv/beszel/socket /srv/.beszel \
+         /srv/satisfactory; do
   if [[ ! -d "$d" ]]; then
     sudo mkdir -p "$d"
     sudo chown "$(id -u):$(id -g)" "$d"
@@ -152,15 +153,25 @@ fi
 # The architectural rule, checked rather than trusted. Apps join `proxy` and
 # are reached by container name; anything else with a host port is a mistake.
 #
-# There are no exceptions. There was one - a controller whose devices spoke raw
-# UDP that a reverse proxy cannot carry - and it is gone, so the allow-list is
-# back to the single name the rule always intended. Adding a second name here
-# is a decision to document in docs/decisions.md, not a quick fix.
+# There is exactly one exception, and it is the same shape as the one this
+# allow-list used to carry: a workload speaking raw UDP, which a reverse proxy
+# cannot carry at all. `satisfactory` publishes 7777/udp, 7777/tcp and
+# 8888/tcp because the game protocol leaves no other option -
+# docs/decisions.md#satisfactory-publishes-ports-and-caddy-cannot-help.
+#
+# Adding a THIRD name here is a decision to document in docs/decisions.md, not
+# a quick fix. The bar is "a reverse proxy physically cannot carry this
+# traffic", not "this was easier".
+#
+# What this check no longer tells you, now that the list has two entries: it
+# confirms the SET of publishing containers, not the set of published PORTS. A
+# second port appearing on satisfactory would pass silently. `ufw status` and
+# the router's forward list are the things to read after any change here.
 #
 # Note this only catches ports published on all interfaces. A port deliberately
 # bound to the LAN address alone (`10.0.0.4:8554:8554`) never matches in the
 # first place, which is the documented way to expose something on purpose.
-ALLOWED_PUBLISHERS='caddy'
+ALLOWED_PUBLISHERS='caddy|satisfactory'
 strays=$(docker ps --format '{{.Names}}|{{.Ports}}' \
   | grep -E '0\.0\.0\.0:|:::' \
   | grep -vE "^($ALLOWED_PUBLISHERS)\|" | cut -d'|' -f1 || true)

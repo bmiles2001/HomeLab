@@ -65,6 +65,12 @@ required_vars() {
     homeassistant) echo "" ;;   # no secrets - HA keeps its own in .storage
     immich)        echo "DB_USERNAME DB_PASSWORD" ;;
     mosquitto)     echo "MQTT_USER MQTT_PASSWORD" ;;
+    # No secrets. The server's admin and claim passwords are set through the
+    # in-game Server Manager and stored in the game's own config under
+    # /srv/satisfactory/saved - there is nothing for compose to interpolate.
+    # Entered explicitly rather than left out, so bootstrap.sh check 6c reads
+    # this as "considered and empty" instead of "someone forgot".
+    satisfactory)  echo "" ;;
     *)             echo "__NO_ENTRY__" ;;
   esac
 }
