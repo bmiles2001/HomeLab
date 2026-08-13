@@ -1,0 +1,189 @@
+name: homelable
+
+# A visual map of the house's network: what is plugged into what, what is up,
+# and what the scanner found that you had forgotten about.
+#
+# Deploy:  ./scripts/deploy.sh homelable
+#
+# Reached at lab.<domain>. LAN-only, permanently - see the note on the Caddy
+# block in stacks/caddy/Caddyfile. A drawn map of every host, open port and
+# service version in the house is the single most useful document an intruder
+# could find here, and it is more useful to them than Beszel's dashboard.
+#
+# Required secrets are validated by deploy.sh, not by ${VAR:?} guards in this
+# file, so plain `docker compose down/logs/ps` works in this directory.
+#
+# Two containers, split the way upstream splits them:
+#
+#   homelable-backend  FastAPI + SQLite. Does the scanning. Not on `proxy`.
+#   homelable          nginx serving the SPA, and proxying /api to the backend.
+#                      The only half Caddy talks to.
+#
+# The upstream compose also ships an `mcp` service (port 8001) that exposes the
+# topology to AI clients. Deliberately left out - it is a third container and a
+# published port for something nothing here consumes yet. Adding it later is
+# the upstream service block plus two keys in Infisical; see docs/homelable.md.
+
+services:
+  homelable-backend:
+    container_name: homelable-backend
+    image: ghcr.io/pouzor/homelable-backend:${HOMELABLE_VERSION:-3.2.0}
+    restart: unless-stopped
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+      # Signs session cookies. Rotating it logs everyone out and nothing worse.
+      SECRET_KEY: ${SECRET_KEY}
+
+      # Local username/password. The image ships admin/admin and will start
+      # perfectly happily with it, which is why AUTH_PASSWORD_HASH is in
+      # deploy.sh's required_vars table - a blank here is not a failure, it is
+      # a default credential on a map of your network.
+      #
+      # The hash is bcrypt and contains `$` characters. Upstream's INSTALLATION
+      # doc says to escape them as `$$` - that advice applies to a hash written
+      # LITERALLY into a compose file. It does not apply here. Compose
+      # interpolates `${AUTH_PASSWORD_HASH}` once and does not re-scan what it
+      # substituted, so the value arrives from Infisical intact. Escaping it
+      # here would put literal `$$` into the hash and lock you out, and there
+      # is no change-password endpoint to recover through.
+      #
+      # `docker compose config` prints it as `$$2b$$12$$...` regardless. That
+      # is the config command escaping dollars so its own output round-trips,
+      # not the value being doubled - `docker exec homelable-backend printenv
+      # AUTH_PASSWORD_HASH` is the one that tells the truth.
+      AUTH_MODE: local
+      AUTH_USERNAME: ${AUTH_USERNAME}
+      AUTH_PASSWORD_HASH: ${AUTH_PASSWORD_HASH}
+
+      # Override the .env.example default, which is a relative path. Must point
+      # inside the bind mount below or the database is a fresh empty file after
+      # every image pull.
+      SQLITE_PATH: /app/data/homelab.db
+
+      # The browser reaches the API same-origin through nginx, so CORS is
+      # barely exercised - but the backend rejects wildcards outright in OIDC
+      # mode and validates this list on startup either way. One entry, the real
+      # hostname. DOMAIN is duplicated into Infisical under /homelable for the
+      # same reason it is under /beszel: deploy.sh reads one path per stack.
+      CORS_ORIGINS: '["https://lab.${DOMAIN}"]'
+
+      # What the scanner sweeps. 10.0.0.0/24 is the Orbi's range - the same
+      # assumption the Caddyfile's LAN guard makes, and it should be corrected
+      # in both places at once if it turns out to be wrong.
+      #
+      # Editable in the UI under Scan Network; this is only the starting value.
+      SCANNER_RANGES: '${SCANNER_RANGES:-["10.0.0.0/24"]}'
+
+      # How often known nodes are re-pinged. 60s is upstream's default and is
+      # fine for a house - this is a map, not an alerting system. Beszel is the
+      # thing that is supposed to wake you up.
+      STATUS_CHECKER_INTERVAL: ${STATUS_CHECKER_INTERVAL:-60}
+
+    volumes:
+      # SQLite plus uploaded floor plans. Bind mount rather than a named volume
+      # so it lands on /srv with everything else worth backing up, and so a
+      # hand-drawn map that took an evening is not living in
+      # /var/lib/docker/volumes. UPLOAD_DIR is left unset: it defaults to
+      # <SQLITE_PATH dir>/uploads, which is already inside this mount.
+      - ${HOMELABLE_DATA:-/srv/homelable/data}:/app/data
+
+    # Needed for the scanner, and it is doing two jobs. `ping` uses it for the
+    # sweep, and nmap picks -sS over -sT when it is running as root with raw
+    # sockets available - the backend chooses its own scan type by checking
+    # geteuid(), so without this it silently degrades to slower connect scans
+    # rather than failing.
+    cap_add:
+      - NET_RAW
+
+    # WHAT THIS CONTAINER CANNOT SEE, and it is worth knowing before you read
+    # the first scan and conclude the tool is broken.
+    #
+    # It is on a bridge network, so its view of the LAN is through the host's
+    # NAT. Ping sweeps, nmap and hostname lookups all work fine that way. The
+    # ARP cache does not: the scanner reads /proc/net/arp, and inside a bridged
+    # container that file is the CONTAINER's arp table - the docker gateway and
+    # nothing else. So two things are lost:
+    #
+    #   - MAC addresses, and therefore vendor identification, on every node.
+    #   - Devices that answer ARP but drop ICMP. Printers and some IoT.
+    #
+    # The fix is `network_mode: host`, and it is not taken. That would publish
+    # 8000 - an authenticated API, but still an API - onto every interface on
+    # the box, which is the exact thing the one host-network exception in this
+    # repo was careful NOT to do. Beszel's agent is on the host network and
+    # binds a unix socket precisely so it stays off the LAN; there is no
+    # equivalent here, the backend only speaks TCP.
+    #
+    # If MACs turn out to matter, macvlan is the answer rather than host - it
+    # gives the container its own LAN address and a real ARP table without
+    # putting a listener on the host's. See docs/homelable.md#what-the-scanner-misses.
+
+    networks:
+      homelable:
+        aliases:
+          # THIS ALIAS IS LOAD-BEARING. The frontend image's nginx.conf has
+          # `proxy_pass http://backend:8000` compiled into it - the name is not
+          # configurable by any environment variable. Renaming this container
+          # without keeping the alias gives a UI that loads and then 502s on
+          # every API call.
+          #
+          # A container literally named `backend` on the shared `proxy` network
+          # would be a collision waiting for the next stack that wants the same
+          # obvious name. Keeping the generic name as an alias on this stack's
+          # private network is what makes it safe.
+          - backend
+
+    healthcheck:
+      # curl is in the image on purpose - upstream installs it for this.
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  homelable:
+    container_name: homelable
+    image: ghcr.io/pouzor/homelable-frontend:${HOMELABLE_VERSION:-3.2.0}
+    restart: unless-stopped
+
+    # No published ports. Caddy reaches this at homelable:80 over `proxy`.
+    #
+    # Do not use the `-standalone` image variant. It is the same SPA with the
+    # /api proxy stripped out of nginx.conf, for people running the frontend
+    # with no backend at all - it would serve a canvas that can never save.
+
+    depends_on:
+      homelable-backend:
+        # Not cosmetic. nginx resolves `backend` once at startup and caches the
+        # result; if it comes up first the name does not resolve, nginx exits,
+        # and restart: unless-stopped papers over it after a few loops. Waiting
+        # for healthy removes the flap.
+        condition: service_healthy
+
+    networks:
+      - homelable   # to reach the backend by its `backend` alias
+      - proxy       # reached by caddy at homelable:80
+
+    healthcheck:
+      # nginx:alpine has no curl. busybox wget is what is actually in there,
+      # and `--spider` makes it a HEAD-style check that downloads nothing.
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  # This stack's own network, and the only reason it exists is the hardcoded
+  # `backend` name above. The backend is not on `proxy`: nothing outside this
+  # stack has any business reaching the API directly, and Caddy does not need
+  # to - it talks to nginx, which proxies /api itself.
+  #
+  # NOT `internal: true`. The scanner needs to reach the LAN.
+  homelable:
+    driver: bridge
+
+  proxy:
+    external: true

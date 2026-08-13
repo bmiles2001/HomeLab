@@ -634,6 +634,72 @@ drop the router forwards, and run it LAN-only or over Tailscale. Nothing about
 the stack's data or config depends on being public — see
 [satisfactory.md](satisfactory.md#exposure).
 
+## Homelable is LAN-only, and that is not a "for now"
+
+Added 2026-08-13. A visual canvas for the network — you draw the house, it
+keeps the nodes coloured by whether they answer. `lab.<domain>`, in the
+LAN-only block, and it belongs there more firmly than anything else in that
+block including Frigate.
+
+The argument is short. Frigate is the worst-case-if-breached service because it
+is cameras. Homelable is the worst-case-if-*read* service, which is a different
+axis: it is a drawn diagram of every host in the house, its open ports and its
+service versions, assembled and kept current. Breaching it gets an attacker
+nothing directly. Reading it hands them the week of reconnaissance they would
+otherwise have to do noisily.
+
+That also means the usual escape hatch does not apply. "Put strong auth on it
+and expose it" is how Immich got public, and it was the right call there
+because Immich's value *is* remote access — see
+[Public exposure](#public-exposure-chosen-over-the-alternatives). Homelable has
+no remote use case at all. Nobody needs the network map from a hotel. If that
+ever changes, the answer is Tailscale, not a hostname.
+
+### The container, not the HACS integration
+
+Homelable ships two independent implementations: the Docker stack, and a Home
+Assistant custom integration that reimplements the panel inside HA. They keep
+separate databases and do not sync, so this is a choice, not an ordering.
+
+The container won on two counts. It is the larger implementation — nmap-based
+service detection, rack canvas, floor plans, Proxmox and MQTT importers, all
+absent from the integration. And it is the one that stays in git: HACS
+integrations live in `custom_components` and `.storage`, outside this repo,
+invisible to `deploy.sh`, and updated by clicking a button in a web UI. That is
+precisely the drift this repo exists to prevent
+([Git is the source of truth](#git-is-the-source-of-truth-with-no-ui-allowed-to-compete)),
+and Home Assistant is already
+[the one stack allowed to escape it](#home-assistant-partially-escapes-git).
+Granting a second exception to the same rule, for the same stack, for a tool
+whose whole job is documenting the network accurately, reads badly.
+
+What the integration had that the container does not is free authentication.
+Caddy's LAN guard plus a bcrypt hash in Infisical covers it for less.
+
+### The scanner is bridged, and gives up MAC addresses
+
+The backend sits on the stack's own bridge network, which means its ARP cache
+is the container's, not the host's. The scanner reads `/proc/net/arp`, so two
+things are lost: MAC addresses and vendor identification on every node, and any
+device that answers ARP but drops ICMP. Ping, nmap and reverse DNS all work
+normally through the NAT.
+
+`network_mode: host` fixes it and was rejected. It would put uvicorn on
+0.0.0.0:8000 across every interface on `forge`. The one host-networked
+container in this repo binds a unix socket and publishes no TCP port at all,
+and that is the entire basis on which it was accepted
+([the agent is on the host network](#beszels-agent-is-on-the-host-network)).
+Reusing the exception without reusing the property that justified it would
+quietly turn a narrow carve-out into a precedent.
+
+Macvlan is the real answer if vendor names ever matter — its own LAN address,
+its own ARP table, no listener on the host. It costs a reserved IP and the
+macvlan rule that the host cannot reach the container, which matters because
+Caddy is on the host and would then need the frontend to stay put while only
+the backend moves. Filed under
+[Still open](#still-open) rather than done, because nothing is currently
+blocked on it.
+
 ## Still open
 - **A backup for Home Assistant's data directory.** HA Container has no backup
   UI, and `/srv/homeassistant/config/.storage` holds every credential HA has.
@@ -653,6 +719,13 @@ the stack's data or config depends on being public — see
   on the same NVMe as `/srv/satisfactory/saved`, so it covers a corrupt save and
   nothing else. The same gap Home Assistant and Beszel have, with lower stakes.
   See [satisfactory.md](satisfactory.md#backups).
+- **A macvlan network for Homelable's scanner.** Bridged, it cannot read MAC
+  addresses or see devices that drop ICMP — see
+  [the scanner is bridged](#the-scanner-is-bridged-and-gives-up-mac-addresses).
+  Nothing is blocked on it; it buys vendor names and silent IoT.
+- **A backup for `/srv/homelable/data`.** The hand-drawn map and any floor
+  plans. The scanner can redraw most of it, which is why this sits below the
+  others on the same list.
 - **Remote access for administration.** Tailscale remains the low-risk answer
   and is now complementary rather than an alternative — public 443 for Immich,
   Tailscale for everything that should never be public.

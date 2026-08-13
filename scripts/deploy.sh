@@ -63,6 +63,12 @@ required_vars() {
     caddy)         echo "CF_API_TOKEN ACME_EMAIL DOMAIN" ;;
     frigate)       echo "FRIGATE_RTSP_USER FRIGATE_RTSP_PASSWORD FRIGATE_MQTT_USER FRIGATE_MQTT_PASSWORD" ;;
     homeassistant) echo "" ;;   # no secrets - HA keeps its own in .storage
+    # AUTH_* are listed even though the image has working defaults, and that is
+    # exactly why: the default is admin/admin, so a blank value here does not
+    # fail to start - it publishes a map of the network behind a credential
+    # everybody already knows. DOMAIN is duplicated from /caddy to build
+    # CORS_ORIGINS, the same way /beszel duplicates it for APP_URL.
+    homelable)     echo "SECRET_KEY AUTH_USERNAME AUTH_PASSWORD_HASH DOMAIN" ;;
     immich)        echo "DB_USERNAME DB_PASSWORD" ;;
     mosquitto)     echo "MQTT_USER MQTT_PASSWORD" ;;
     # No secrets. The server's admin and claim passwords are set through the

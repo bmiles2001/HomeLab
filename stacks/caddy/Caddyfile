@@ -224,6 +224,30 @@ photos.{env.DOMAIN} {
 		}
 	}
 
+	# --- lab.<domain> - Homelable -------------------------------------------
+	# The network map. Upstream is the frontend's nginx, not the backend:
+	# nginx serves the SPA and proxies /api to homelable-backend itself, on
+	# that stack's private network. The backend is not on `proxy` and has no
+	# hostname here on purpose.
+	#
+	# This stays in the LAN-only block permanently, for a stronger reason than
+	# Beszel above it. Beszel's dashboard tells you what this box runs;
+	# Homelable is a drawn diagram of every host in the house, its open ports
+	# and its service versions - the document an intruder would otherwise have
+	# to spend a week building. See
+	# docs/decisions.md#homelable-is-lan-only-and-that-is-not-a-for-now.
+	@homelable host lab.{env.DOMAIN}
+	handle @homelable {
+		reverse_proxy homelable:80 {
+			# Live node status arrives over a WebSocket at
+			# /api/v1/status/ws/. Caddy upgrades it on its own but buffers
+			# by default, which presents as a map that draws correctly once
+			# and then never changes colour - the same symptom the Frigate,
+			# Home Assistant and Beszel blocks have.
+			flush_interval -1
+		}
+	}
+
 	# --- template: copy this block for each new app ------------------------
 	# @myapp host myapp.{env.DOMAIN}
 	# handle @myapp {
