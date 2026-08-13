@@ -244,6 +244,21 @@ no `$$`:
 infisical secrets --projectId="$INFISICAL_PROJECT_ID" --env=prod --path=/homelable
 ```
 
+**The frontend is `(unhealthy)` but the site works fine.** Almost certainly the
+healthcheck resolving `localhost` to `::1`. Docker writes `::1 localhost` into
+every container's `/etc/hosts`, and this image's nginx has `listen 80;` with no
+IPv6 listener, so a client that tries the AAAA record first gets a refused
+connection from a container that is serving normally. `curl` falls back to the
+A record; busybox `wget` resolves one address and does not. Both healthchecks
+use `127.0.0.1` for this reason — if one ever gets "fixed" back to `localhost`,
+this is the symptom.
+
+Read the actual error rather than assuming:
+
+```bash
+docker inspect --format '{{json .State.Health}}' homelable | jq
+```
+
 **Scan finds nothing at all.** `SCANNER_RANGES` defaults to `["10.0.0.0/24"]`,
 which is an assumption about the Orbi — the same assumption the
 [Caddyfile's LAN guard](../stacks/caddy/Caddyfile) makes. If the house is on
