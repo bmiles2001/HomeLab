@@ -391,9 +391,16 @@ Download the installer rather than piping it into `sudo`:
 curl -sfL https://raw.githubusercontent.com/moghtech/komodo/main/scripts/setup-periphery.py \
   -o /tmp/setup-periphery.py
 sudo python3 /tmp/setup-periphery.py \
+  --version v2.3.2 \
   --core-address ws://127.0.0.1:9120 \
   --connect-as forge
 ```
+
+**`--version` is not optional, and leaving it off is a trap.** The installer
+defaults to the latest GitHub release, while `compose.yml` pins Core — so
+omitting it installs whatever is newest that day and mismatches. Pass the same
+version as `KOMODO_VERSION` in `stacks/komodo/compose.yml`. A mismatch shows up
+only in `systemctl status periphery`; the UI just shows the Server as NOT OK.
 
 > `sudo python3 <(curl ...)` **does not work**, and the error is misleading:
 > `python3: can't open file '/dev/fd/63': No such file or directory`. `sudo`
@@ -497,6 +504,37 @@ run it unmanaged first to read the diff, and only then set it managed.
 Managed mode deletes resources that exist in the database but not in the files.
 Running it managed before the files are known-correct is how you delete the
 stack you just built.
+
+---
+
+## Upgrading
+
+**Core and Periphery must be on the same version**, always, and they are
+upgraded by two different mechanisms — one is a commit, the other is a command
+on the host. Doing only the first leaves the Server at NOT OK with the reason
+visible only in `systemctl status periphery`.
+
+```bash
+# 1. On your PC: bump KOMODO_VERSION in stacks/komodo/compose.yml, commit, push.
+# 2. On forge:
+cd ~/home-containers && git pull --ff-only
+./scripts/deploy.sh komodo
+
+# 3. Same version, on the host:
+curl -sfL https://raw.githubusercontent.com/moghtech/komodo/main/scripts/setup-periphery.py \
+  -o /tmp/setup-periphery.py
+sudo python3 /tmp/setup-periphery.py --version v<x.y.z>
+sudo systemctl restart periphery
+```
+
+The agent keeps its config and keys across a reinstall, so step 3 does not
+repeat the setup in step 5.
+
+This is the one part of Komodo that `deploy.sh` cannot keep honest — the agent
+is host state, like `periphery.config.toml` and the identity file. Note also
+that Komodo's own auto-update machinery must never be pointed at this stack:
+it would upgrade Core and leave the agent behind, which is precisely the
+mismatch above.
 
 ---
 

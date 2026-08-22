@@ -104,7 +104,17 @@ services:
 
   komodo:
     container_name: komodo
-    image: ghcr.io/moghtech/komodo-core:${KOMODO_VERSION:-2.2.0}
+    # CORE AND PERIPHERY MUST BE THE SAME VERSION. The agent refuses to talk to
+    # a Core on a different one, and says so plainly in `systemctl status
+    # periphery` - which is the only place it is visible, because the Server
+    # just sits at NOT OK in the UI.
+    #
+    # The trap: `setup-periphery.py` installs the LATEST GitHub release unless
+    # given `--version`, so a pinned Core older than latest mismatches on a
+    # fresh install by default. Bumping this line means re-running the
+    # installer with a matching `--version v<x.y.z>` - see
+    # docs/komodo.md#upgrading.
+    image: ghcr.io/moghtech/komodo-core:${KOMODO_VERSION:-2.3.2}
     restart: unless-stopped
     init: true
 
