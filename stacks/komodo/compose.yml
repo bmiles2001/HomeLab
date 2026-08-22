@@ -17,56 +17,88 @@ name: komodo
 # repo and are read in place; resource configuration stays in komodo/*.toml and
 # is pushed into Komodo by a managed Resource Sync. See docs/komodo.md.
 #
-# Two containers, and the agent is NOT one of them:
+# Four containers, and the agent is NOT one of them:
 #
-#   komodo-mongo  the database. Private network, no ports, never on `proxy`.
-#   komodo        Core. The UI and API. On `proxy` for Caddy, plus one
-#                 loopback-only published port for the agent to dial.
-#   periphery     a systemd service ON THE HOST, deliberately not a container.
-#                 See docs/komodo.md#periphery for why, and for its config.
+#   komodo-postgres  Postgres with the DocumentDB extension. The actual store.
+#   komodo-ferretdb  Speaks the Mongo wire protocol on top of it. Core only
+#                    knows how to talk to Mongo; this is the translator.
+#   komodo           Core. The UI and API. On `proxy` for Caddy, plus one
+#                    loopback-only published port for the agent to dial.
+#   periphery        a systemd service ON THE HOST, deliberately not a
+#                    container. See docs/komodo.md#periphery.
+#
+# WHY FERRETDB AND NOT MONGO
+#
+# Not a licence preference - a hard blocker. MongoDB 8.0+ refuses to start on
+# Linux kernel 6.19 and newer ("MongoDB cannot start: Linux kernel versions
+# 6.19 and newer has a known incompatibility", SERVER-121912), which is the
+# kernel forge runs. The cause is TCMalloc violating the upstream rseq ABI, and
+# it is a hard startup check rather than a crash - a container restart loop, no
+# workaround flag, and running it in Docker does not help because the container
+# shares the host kernel.
+#
+# Komodo's own setup docs name FerretDB as the supported alternative "for
+# systems that cannot run the latest MongoDB versions". Revisit only if
+# MongoDB ships a build that starts on this kernel; there is no reason to.
 
 services:
-  komodo-mongo:
-    container_name: komodo-mongo
+  komodo-postgres:
+    container_name: komodo-postgres
 
-    # Pinned. Upstream ships this unpinned and their own FerretDB compose file
-    # carries a "pin to a specific version, updates can be breaking" warning -
-    # that applies here too.
-    #
-    # Mongo rather than FerretDB + postgres-documentdb, which is upstream's
-    # other supported option. FerretDB is two containers instead of one to
-    # avoid Mongo's SSPL licence, and this is a home server that publishes
-    # nothing - paying two moving parts for a licence question that does not
-    # arise is the wrong trade. Same reasoning that kept the stack count down
-    # in docs/decisions.md.
-    image: docker.io/library/mongo:8.0
+    # Pinned to the exact tag FerretDB's own docs pair with ferretdb:2.7.0.
+    # These two images are versioned together and upstream warns that updates
+    # can be breaking - do not float either one independently.
+    image: ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0
     restart: unless-stopped
 
     labels:
       # Komodo's "Stop All Containers" would otherwise stop its own database
-      # out from under itself. Upstream sets this in their compose files and it
-      # is not optional.
+      # out from under itself. Upstream sets this and it is not optional.
       komodo.skip:
-
-    # --quiet drops the per-connection chatter; the cache cap keeps Mongo from
-    # taking half of RAM for a database that will hold a few thousand small
-    # documents. Both are upstream's own defaults for this compose file.
-    command: --quiet --wiredTigerCacheSizeGB 0.25
 
     environment:
       TZ: ${TZ:-America/Chicago}
-      MONGO_INITDB_ROOT_USERNAME: ${KOMODO_DATABASE_USERNAME:-}
-      MONGO_INITDB_ROOT_PASSWORD: ${KOMODO_DATABASE_PASSWORD:-}
+      POSTGRES_USER: ${KOMODO_DATABASE_USERNAME:-}
+      POSTGRES_PASSWORD: ${KOMODO_DATABASE_PASSWORD:-}
+      POSTGRES_DB: postgres
 
     volumes:
-      # Bind mounts rather than named volumes, so the database lands on /srv
-      # with everything else worth backing up - same reasoning as beszel's
-      # SQLite. bootstrap.sh creates these.
-      - ${KOMODO_DB_DATA:-/srv/komodo/db/data}:/data/db
-      - ${KOMODO_DB_CONFIG:-/srv/komodo/db/config}:/data/configdb
+      # A named volume rather than a bind mount, for the same reasons as
+      # immich_postgres: it lands on the machine's ext4 disk with correct
+      # ownership, and recovery is via a dump rather than by copying this
+      # directory. Core writes those dumps to /backups on a schedule.
+      - pgdata:/var/lib/postgresql/data
 
-    # Private network only. It is not on `proxy`, so no other stack's
-    # containers can reach it by name, and it publishes nothing.
+    networks:
+      - default
+
+  komodo-ferretdb:
+    container_name: komodo-ferretdb
+    image: ghcr.io/ferretdb/ferretdb:2.7.0
+    restart: unless-stopped
+
+    labels:
+      komodo.skip:
+
+    depends_on:
+      - komodo-postgres
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+      # THE PASSWORD GOES INTO A URL HERE, AND THAT CONSTRAINS IT.
+      #
+      # `postgres://user:pass@host` is parsed as a URI, so a password
+      # containing / : @ ? # or % breaks the connection string rather than
+      # failing to authenticate - which presents as a confusing parse error
+      # instead of "bad password". `openssl rand -base64` emits `/` and `+`
+      # routinely, so KOMODO_DATABASE_PASSWORD must be generated from a
+      # URL-safe alphabet. See docs/komodo.md#getting-started step 1.
+      FERRETDB_POSTGRESQL_URL: postgres://${KOMODO_DATABASE_USERNAME:-}:${KOMODO_DATABASE_PASSWORD:-}@komodo-postgres:5432/postgres
+
+    volumes:
+      - ferretdb-state:/state
+
     networks:
       - default
 
@@ -80,7 +112,7 @@ services:
       komodo.skip:
 
     depends_on:
-      - komodo-mongo
+      - komodo-ferretdb
 
     # THE THIRD PUBLISHED PORT ON THIS BOX, AND THE FIRST FROM A CONTAINER.
     #
@@ -109,7 +141,9 @@ services:
       # way /beszel and /homelable duplicate it.
       KOMODO_HOST: https://deploy.${DOMAIN:-}
 
-      KOMODO_DATABASE_ADDRESS: komodo-mongo:27017
+      # Core speaks the Mongo wire protocol and does not know FerretDB exists.
+      # 27017 here is FerretDB's listener, not a real mongod.
+      KOMODO_DATABASE_ADDRESS: komodo-ferretdb:27017
       KOMODO_DATABASE_USERNAME: ${KOMODO_DATABASE_USERNAME:-}
       KOMODO_DATABASE_PASSWORD: ${KOMODO_DATABASE_PASSWORD:-}
 
@@ -135,6 +169,11 @@ services:
       # Only consulted on the first launch against an empty database. Kept in
       # Infisical rather than typed once and forgotten, because the day they
       # matter again is the day the database is gone and you are rebuilding.
+      #
+      # Do not leave these blank: upstream's alternative is to create the first
+      # user with the signup button, and DISABLE_USER_REGISTRATION above
+      # removes that button. Blank here plus registration disabled is a working
+      # Komodo you cannot log in to.
       KOMODO_INIT_ADMIN_USERNAME: ${KOMODO_INIT_ADMIN_USERNAME:-}
       KOMODO_INIT_ADMIN_PASSWORD: ${KOMODO_INIT_ADMIN_PASSWORD:-}
 
@@ -154,7 +193,9 @@ services:
       # re-trusting the agent, not losing the database.
       - ${KOMODO_KEYS:-/srv/komodo/keys}:/config/keys
 
-      # Dated database dumps, written by Core on a schedule.
+      # Dated database dumps, written by Core on a schedule. This is the
+      # recovery path for pgdata above, and the reason that volume is allowed
+      # to be a named volume rather than something you can tar up.
       - ${KOMODO_BACKUPS:-/srv/komodo/backups}:/backups
 
       # The resource definitions in this repo, read-only. Mounting them lets a
@@ -166,12 +207,16 @@ services:
 
     networks:
       - proxy     # reached by caddy at komodo:9120
-      - default   # reaches komodo-mongo
+      - default   # reaches komodo-ferretdb
 
-    # No healthcheck. Core's image is distroless-ish and has neither curl nor
-    # wget, and `docker compose ps` reporting a container as healthy on the
-    # strength of a check that was never verified is worse than no check at
-    # all. Same position as beszel-agent's commented-out block.
+    # No healthcheck. Core's image has neither curl nor wget, and
+    # `docker compose ps` reporting a container as healthy on the strength of a
+    # check that was never verified is worse than no check at all. Same
+    # position as beszel-agent's commented-out block.
+
+volumes:
+  pgdata:
+  ferretdb-state:
 
 networks:
   proxy:

@@ -17,7 +17,7 @@ with three config fields and one script standing between it and the secrets.
 |---|---|---|
 | Secret values | Infisical | fetched at deploy time by `scripts/komodo-env.sh`, never stored |
 | Compose files | this repo, on disk | read in place (`files_on_host`) |
-| Stack configuration | `komodo/*.toml` in this repo | Resource Sync in `managed` mode; Mongo is a cache |
+| Stack configuration | `komodo/*.toml` in this repo | Resource Sync in `managed` mode; its database is a cache |
 | Host state | forge | not in this repo — same caveat as [cockpit.md](cockpit.md) |
 
 Three Stack fields do the load-bearing work, and all three are set in
@@ -69,7 +69,7 @@ You most likely need zero of them:
   **`/etc/komodo/periphery.config.toml`**, not the UI. A `[[git_provider]]`
   block there is scoped to this server and sits next to the identity file as
   host state; the same block in Core's config or the UI would be global and
-  live in Mongo.
+  live in its database.
 
 ### The credential that stays on disk regardless
 
@@ -255,7 +255,7 @@ second copy of the table.
 
 ## Resource Syncs
 
-Komodo's Mongo holds stack configuration — which repo, which run directory,
+Komodo's database holds stack configuration — which repo, which run directory,
 which flags. That is a store of record competing with git, which is the same
 objection that ruled out Portainer's web editor.
 
@@ -282,8 +282,17 @@ three random ones on forge rather than inventing them:
 ```bash
 openssl rand -base64 48   # KOMODO_JWT_SECRET
 openssl rand -base64 48   # KOMODO_WEBHOOK_SECRET
-openssl rand -base64 24   # KOMODO_DATABASE_PASSWORD
+openssl rand -hex 24      # KOMODO_DATABASE_PASSWORD  <- hex, not base64
 ```
+
+**The database password must be URL-safe, and this is not fussiness.** FerretDB
+reaches Postgres over a connection *URI*
+(`postgres://user:pass@komodo-postgres:5432/postgres`), so a password containing
+`/ : @ ? # %` corrupts the string rather than failing to authenticate — you get
+a parse error that says nothing about passwords. `openssl rand -base64` emits
+`/` and `+` routinely. Use `-hex`, which cannot.
+
+The other two never enter a URI, so base64 is fine for them.
 
 | Key | Value |
 |---|---|
@@ -302,12 +311,22 @@ the day the database is gone and you are rebuilding.
 ### 2. Make the host directories
 
 ```bash
-sudo mkdir -p /srv/komodo/{db/data,db/config,keys,backups}
+sudo mkdir -p /srv/komodo/{keys,backups}
 ```
+
+Only two. The database itself lives in named volumes (`pgdata`,
+`ferretdb-state`) for the same reason `immich_postgres` does — correct
+ownership on ext4, and recovery via a dump rather than by copying the
+directory. Core writes those dumps into `/srv/komodo/backups`.
 
 These belong in `bootstrap.sh` alongside the other `/srv` paths. Adding them
 there is the difference between a rebuild that works and a rebuild that stops
 here.
+
+> **If you already tried this with MongoDB**, clear the failed attempt first —
+> `docker compose -p komodo down -v` and `sudo rm -rf /srv/komodo/db`. Mongo
+> never reached the point of writing anything, so nothing is lost. See the
+> header of `stacks/komodo/compose.yml` for why it cannot run on this kernel.
 
 ### 3. Deploy Core
 
