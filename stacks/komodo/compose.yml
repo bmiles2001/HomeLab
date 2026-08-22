@@ -1,0 +1,178 @@
+name: komodo
+
+# Container UI and deploy orchestrator for forge.
+#
+# Deploy:  ./scripts/deploy.sh komodo
+#
+# KOMODO IS DEPLOYED BY deploy.sh AND NEVER BY ITSELF. That is the same
+# bootstrapping rule infisical has, one layer up: a tool cannot be the thing
+# that redeploys itself while it is down. Every other stack may move to the
+# Komodo path; this one does not.
+#
+# Required secrets are validated by deploy.sh, not by ${VAR:?} guards in this
+# file, so plain `docker compose down/logs/ps` works in this directory.
+#
+# WHAT KOMODO IS ALLOWED TO OWN HERE: nothing. Secrets stay in Infisical and
+# are rendered per deploy by scripts/komodo-env.sh; compose files stay in this
+# repo and are read in place; resource configuration stays in komodo/*.toml and
+# is pushed into Komodo by a managed Resource Sync. See docs/komodo.md.
+#
+# Two containers, and the agent is NOT one of them:
+#
+#   komodo-mongo  the database. Private network, no ports, never on `proxy`.
+#   komodo        Core. The UI and API. On `proxy` for Caddy, plus one
+#                 loopback-only published port for the agent to dial.
+#   periphery     a systemd service ON THE HOST, deliberately not a container.
+#                 See docs/komodo.md#periphery for why, and for its config.
+
+services:
+  komodo-mongo:
+    container_name: komodo-mongo
+
+    # Pinned. Upstream ships this unpinned and their own FerretDB compose file
+    # carries a "pin to a specific version, updates can be breaking" warning -
+    # that applies here too.
+    #
+    # Mongo rather than FerretDB + postgres-documentdb, which is upstream's
+    # other supported option. FerretDB is two containers instead of one to
+    # avoid Mongo's SSPL licence, and this is a home server that publishes
+    # nothing - paying two moving parts for a licence question that does not
+    # arise is the wrong trade. Same reasoning that kept the stack count down
+    # in docs/decisions.md.
+    image: docker.io/library/mongo:8.0
+    restart: unless-stopped
+
+    labels:
+      # Komodo's "Stop All Containers" would otherwise stop its own database
+      # out from under itself. Upstream sets this in their compose files and it
+      # is not optional.
+      komodo.skip:
+
+    # --quiet drops the per-connection chatter; the cache cap keeps Mongo from
+    # taking half of RAM for a database that will hold a few thousand small
+    # documents. Both are upstream's own defaults for this compose file.
+    command: --quiet --wiredTigerCacheSizeGB 0.25
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+      MONGO_INITDB_ROOT_USERNAME: ${KOMODO_DATABASE_USERNAME:-}
+      MONGO_INITDB_ROOT_PASSWORD: ${KOMODO_DATABASE_PASSWORD:-}
+
+    volumes:
+      # Bind mounts rather than named volumes, so the database lands on /srv
+      # with everything else worth backing up - same reasoning as beszel's
+      # SQLite. bootstrap.sh creates these.
+      - ${KOMODO_DB_DATA:-/srv/komodo/db/data}:/data/db
+      - ${KOMODO_DB_CONFIG:-/srv/komodo/db/config}:/data/configdb
+
+    # Private network only. It is not on `proxy`, so no other stack's
+    # containers can reach it by name, and it publishes nothing.
+    networks:
+      - default
+
+  komodo:
+    container_name: komodo
+    image: ghcr.io/moghtech/komodo-core:${KOMODO_VERSION:-2.2.0}
+    restart: unless-stopped
+    init: true
+
+    labels:
+      komodo.skip:
+
+    depends_on:
+      - komodo-mongo
+
+    # THE THIRD PUBLISHED PORT ON THIS BOX, AND THE FIRST FROM A CONTAINER.
+    #
+    # Bound to 127.0.0.1, not 0.0.0.0. The LAN cannot reach it; only processes
+    # on forge itself can. That is the whole point: the periphery agent is a
+    # systemd service on the host and has to dial Core, and this is the most
+    # direct way to let it - it keeps working when Caddy or the Caddyfile is
+    # the thing that is broken, which is exactly when you want the deploy tool.
+    #
+    # This does not trip bootstrap.sh check 6: that check "only catches ports
+    # published on all interfaces", in its own words. A deliberate loopback
+    # publish is anticipated there rather than smuggled past it.
+    #
+    # README rule 2 is still worth re-reading before copying this line into
+    # another stack. Nothing else here has a reason this good.
+    ports:
+      - "127.0.0.1:9120:9120"
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+      KOMODO_TITLE: forge
+
+      # Used for OAuth redirects and for the webhook URLs the UI suggests. It
+      # is NOT what serves the UI, so getting it wrong breaks links rather than
+      # the site. DOMAIN is duplicated into Infisical under /komodo the same
+      # way /beszel and /homelable duplicate it.
+      KOMODO_HOST: https://deploy.${DOMAIN:-}
+
+      KOMODO_DATABASE_ADDRESS: komodo-mongo:27017
+      KOMODO_DATABASE_USERNAME: ${KOMODO_DATABASE_USERNAME:-}
+      KOMODO_DATABASE_PASSWORD: ${KOMODO_DATABASE_PASSWORD:-}
+
+      # Signs session tokens. A blank value does NOT fail to start - Komodo
+      # generates a random one per boot instead, which signs everybody out on
+      # every restart and presents as a login bug rather than a config error.
+      # That is why it is in required_vars() in deploy.sh.
+      KOMODO_JWT_SECRET: ${KOMODO_JWT_SECRET:-}
+      KOMODO_JWT_TTL: 1-wk
+
+      # Authenticates incoming webhooks. Nothing can currently reach the
+      # webhook endpoint - the hostname is LAN-only and GitHub is not on the
+      # LAN - but the secret is set anyway so that turning webhooks on later is
+      # one decision rather than two. See docs/komodo.md#deploying-on-demand.
+      KOMODO_WEBHOOK_SECRET: ${KOMODO_WEBHOOK_SECRET:-}
+
+      # Local username + password. No OAuth: GitHub and Google OAuth both need
+      # a redirect URL they can reach, and this host is LAN-only.
+      KOMODO_LOCAL_AUTH: "true"
+      KOMODO_DISABLE_USER_REGISTRATION: "true"
+      KOMODO_ENABLE_NEW_USERS: "false"
+
+      # Only consulted on the first launch against an empty database. Kept in
+      # Infisical rather than typed once and forgotten, because the day they
+      # matter again is the day the database is gone and you are rebuilding.
+      KOMODO_INIT_ADMIN_USERNAME: ${KOMODO_INIT_ADMIN_USERNAME:-}
+      KOMODO_INIT_ADMIN_PASSWORD: ${KOMODO_INIT_ADMIN_PASSWORD:-}
+
+      # Creates the Server resource the periphery agent connects as. This name
+      # must match `connect_as` in /etc/komodo/periphery.config.toml exactly.
+      KOMODO_FIRST_SERVER_NAME: forge
+
+      # Left ON deliberately. This is the setting that turns a deploy button
+      # into a double-click; on a tool that can tear down the photo library,
+      # the extra dialog is worth the two seconds.
+      KOMODO_DISABLE_CONFIRM_DIALOG: "false"
+
+    volumes:
+      # Core's half of the Noise/PKI keypair. v2 replaced the shared passkey
+      # with this, and the agent has to be given the PUBLIC half - see
+      # docs/komodo.md#getting-started step 5. Losing this volume means
+      # re-trusting the agent, not losing the database.
+      - ${KOMODO_KEYS:-/srv/komodo/keys}:/config/keys
+
+      # Dated database dumps, written by Core on a schedule.
+      - ${KOMODO_BACKUPS:-/srv/komodo/backups}:/backups
+
+      # The resource definitions in this repo, read-only. Mounting them lets a
+      # Resource Sync run in "files on host" mode, which means Core never needs
+      # a git token or its own clone of this repo - it reads the same checkout
+      # deploy.sh and the periphery agent read. The host path is the one thing
+      # in this file that assumes where the repo lives.
+      - ${HOME_CONTAINERS:-/home/brent/home-containers}/komodo:/syncs:ro
+
+    networks:
+      - proxy     # reached by caddy at komodo:9120
+      - default   # reaches komodo-mongo
+
+    # No healthcheck. Core's image is distroless-ish and has neither curl nor
+    # wget, and `docker compose ps` reporting a container as healthy on the
+    # strength of a check that was never verified is worse than no check at
+    # all. Same position as beszel-agent's commented-out block.
+
+networks:
+  proxy:
+    external: true

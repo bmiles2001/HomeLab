@@ -1,0 +1,71 @@
+# The Repo resource and the deploy Procedure.
+#
+# Deploys here are ON DEMAND - a button, not a git push. Komodo is LAN-only
+# (docs/komodo.md#how-you-reach-it), so GitHub's webhook cannot reach it, and
+# exposing an inbound path to the service holding the docker socket is not a
+# trade worth making for saving one click. Cloudflare Tunnel is the deferred
+# upgrade if that ever chafes.
+#
+# Same caveat as komodo/beszel.toml: build these in the UI once, export to TOML,
+# and reconcile the field spellings against this file. `on_pull.path` /
+# `on_pull.command` below matches upstream's own sync documentation; the
+# `DeployStack` execution type is a guess, because upstream only documents
+# `Deploy` for Deployments.
+
+# =============================================================================
+# The checkout
+# =============================================================================
+
+[[repo]]
+name = "home-containers"
+description = "The repo itself. Stacks read their compose files out of this checkout in place."
+tags = ["forge"]
+
+config.server = "forge"
+config.git_provider = "github.com"
+config.repo = "bmiles2001/HomeLab"
+config.branch = "main"
+
+# The SAME checkout you SSH into and run scripts/deploy.sh from - not a second
+# clone under periphery's repo_dir. One checkout means one git state on the box,
+# and it is what puts deploy.sh's `.env` guard in the same directory that
+# komodo-env.sh writes into. See docs/komodo.md.
+config.path = "/home/brent/home-containers"
+
+# OFF, deliberately. This is the line that would turn on git-push-to-deploy, and
+# it cannot work while the hostname is LAN-only - GitHub cannot reach it. Left
+# here set to false rather than omitted so that turning it on is a decision
+# someone makes on purpose, having read the paragraph above.
+config.webhook_enabled = false
+
+# No on_pull command. Pulling and deploying are separate steps chained by the
+# Procedure below, so that "get the new files" and "restart the containers" can
+# be run independently when something is wrong.
+# config.on_pull.path = "."
+# config.on_pull.command = ""
+
+# =============================================================================
+# The button
+# =============================================================================
+
+[[procedure]]
+name = "deploy-beszel"
+description = "Pull the repo, then redeploy beszel. The on-demand replacement for a webhook."
+tags = ["forge"]
+
+# Stages run in sequence; executions inside a stage run in parallel. Two stages
+# rather than one, because the pull must finish before the deploy reads the
+# files it just changed.
+[[procedure.stages]]
+name = "Pull home-containers"
+enabled = true
+executions = [
+  { execution.type = "PullRepo", execution.params.repo = "home-containers", enabled = true }
+]
+
+[[procedure.stages]]
+name = "Deploy beszel"
+enabled = true
+executions = [
+  { execution.type = "DeployStack", execution.params.stack = "beszel", enabled = true }
+]

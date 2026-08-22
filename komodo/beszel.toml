@@ -1,0 +1,92 @@
+# Komodo resource definition for the beszel stack.
+#
+# This file is the source of truth for how Komodo deploys beszel. Komodo's
+# Mongo holds a copy; a Resource Sync in `managed` mode pointed at this
+# directory makes that copy a cache rather than a second opinion. That is the
+# whole answer to "a UI must not compete with git" - see
+# docs/decisions.md#git-is-the-source-of-truth and docs/komodo.md.
+#
+# HOW TO GET A KNOWN-GOOD VERSION OF THIS FILE
+#
+# Field names below follow komodo_client's StackConfig. The `{ path, command }`
+# shape of pre_deploy / post_deploy matches how upstream's own sync docs spell
+# `on_pull` for Repos - same SystemCommand type - so it is likely right, but
+# build the stack once in the UI, export it to TOML, and reconcile before
+# trusting it. Commit the exported spelling, keep these comments.
+
+[[stack]]
+name = "beszel"
+description = "Server monitoring for forge. Deploy path is Komodo; scripts/deploy.sh remains the manual path."
+tags = ["forge"]
+
+[stack.config]
+server = "forge"
+
+# FILES ON HOST, not a Komodo-managed clone.
+#
+# Komodo reads the same working copy you edit and deploy.sh deploys, at
+# ~/home-containers. That is deliberate: it means there is one checkout, one
+# git state, and - the part that matters - deploy.sh's `.env` guard is looking
+# at the same directory this stack's pre_deploy writes into, so a leftover from
+# a failed Komodo deploy gets caught the next time you run deploy.sh by hand.
+#
+# Pulling is a separate Repo resource in komodo/home-containers.toml, chained
+# ahead of this stack by the deploy-beszel Procedure, so exactly one thing runs
+# `git pull` on this checkout. See docs/komodo.md#deploying-on-demand.
+files_on_host = true
+run_directory = "/home/brent/home-containers/stacks/beszel"
+file_paths = ["compose.yml"]
+
+# ---------------------------------------------------------------------------
+# The three fields that keep Komodo out of the secrets business
+# ---------------------------------------------------------------------------
+
+# Empty. Komodo writes this field's contents to env_file_path at step 2 of the
+# deploy, OVERWRITING the file. Anything typed into the Environment box in the
+# UI lands here and would be clobbering scripts/komodo-env.sh's output on the
+# next sync. Leave it empty; if you need a value, it belongs in Infisical.
+environment = ""
+
+# Left at the default. Komodo writes an empty .env here at step 2, then
+# pre_deploy replaces it with a symlink to tmpfs at step 5, and compose reads
+# the symlink at step 10. Ordering verified in bin/periphery/src/api/compose.rs.
+#
+# Do NOT point this at a decoy name: passing --env-file to compose suppresses
+# the automatic .env lookup, and then the symlink would be ignored.
+env_file_path = ".env"
+
+# No [[VARIABLE]] interpolation. Komodo's own Variables/Secrets store is unused
+# by design, and this makes an accidental entry in it inert rather than active.
+skip_secret_interp = true
+
+# ---------------------------------------------------------------------------
+# The hooks
+# ---------------------------------------------------------------------------
+#
+# Absolute command path, no shell metacharacters - no pipes, no redirects, no
+# quoting. Komodo's SystemCommand does not reliably run through a shell (a
+# "standard shell mode" only arrived in v2.2.0), so a command that needed `>`
+# would work or not depending on a setting. This one works either way, and the
+# logic it invokes lives in git rather than in Komodo's database.
+
+pre_deploy = { path = ".", command = "/home/brent/home-containers/scripts/komodo-env.sh render beszel" }
+
+# Runs only if the deploy SUCCEEDED - `if res.deployed` in compose.rs. The
+# rendered file is on tmpfs precisely because this hook cannot be relied on.
+post_deploy = { path = ".", command = "/home/brent/home-containers/scripts/komodo-env.sh clean beszel" }
+
+# ---------------------------------------------------------------------------
+# Updates
+# ---------------------------------------------------------------------------
+
+# Watch the registry, but never act on it. beszel's image is pinned to
+# ${BESZEL_VERSION:-0.18.7} in compose.yml, so this reports movement on that
+# exact tag - it will not tell you 0.19 exists. Bumping a version stays a
+# commit, which is the point.
+poll_for_updates = true
+auto_update = false
+
+# Safe here only because every image in this repo carries a pinned tag - a pull
+# fetches the tag you asked for, not "whatever is newest". On a stack using
+# :latest this flag would silently change what is running on every deploy.
+auto_pull = true

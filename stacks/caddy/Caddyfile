@@ -248,6 +248,31 @@ photos.{env.DOMAIN} {
 		}
 	}
 
+	# --- deploy.<domain> - Komodo -------------------------------------------
+	# The deploy UI. This is the most dangerous hostname in the file and it
+	# stays in the LAN-only block permanently. Beszel above exposes a map of
+	# what runs on this box; Frigate exposes the cameras; this exposes the
+	# controls. Komodo's periphery agent drives the docker socket, so a session
+	# here is root on forge - see the socket comment in
+	# stacks/beszel/compose.yml for what that means literally.
+	#
+	# There is deliberately no webhook exception carved out of the @notlocal
+	# guard above. GitHub cannot reach this hostname, which is why deploys are
+	# a button rather than a git push - see docs/komodo.md#deploying-on-demand.
+	#
+	# Core also publishes 9120 on 127.0.0.1 only, for the periphery agent on
+	# the host to dial. That is a loopback publish, not a LAN one, and it is
+	# not the path this block uses.
+	@komodo host deploy.{env.DOMAIN}
+	handle @komodo {
+		reverse_proxy komodo:9120 {
+			# Deploy logs, container logs and the server terminal all arrive
+			# over long-lived streams. Same buffering symptom as the four
+			# blocks above - the page loads once and then never moves.
+			flush_interval -1
+		}
+	}
+
 	# --- template: copy this block for each new app ------------------------
 	# @myapp host myapp.{env.DOMAIN}
 	# handle @myapp {

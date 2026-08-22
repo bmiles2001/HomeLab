@@ -70,6 +70,20 @@ required_vars() {
     # CORS_ORIGINS, the same way /beszel duplicates it for APP_URL.
     homelable)     echo "SECRET_KEY AUTH_USERNAME AUTH_PASSWORD_HASH DOMAIN" ;;
     immich)        echo "DB_USERNAME DB_PASSWORD" ;;
+    # Komodo is deployed BY this script and never by itself - the same
+    # bootstrapping reason infisical is excluded above, one layer up: a tool
+    # cannot be the thing that redeploys itself while it is down.
+    #
+    # JWT_SECRET is listed because a blank one does not fail to start: Komodo
+    # generates a random secret per boot instead, which silently signs out
+    # every session on every restart and reads as a login bug.
+    # INIT_ADMIN_* only take effect on the very first launch against an empty
+    # database, but they are checked every time because the case where they
+    # matter is the case where you cannot get in to fix them.
+    #
+    # scripts/komodo-env.sh reads this same list through --required-vars, so a
+    # name added here is enforced on the Komodo deploy path too.
+    komodo)        echo "KOMODO_DATABASE_USERNAME KOMODO_DATABASE_PASSWORD KOMODO_JWT_SECRET KOMODO_WEBHOOK_SECRET KOMODO_INIT_ADMIN_USERNAME KOMODO_INIT_ADMIN_PASSWORD DOMAIN" ;;
     mosquitto)     echo "MQTT_USER MQTT_PASSWORD" ;;
     # No secrets. The server's admin and claim passwords are set through the
     # in-game Server Manager and stored in the game's own config under
