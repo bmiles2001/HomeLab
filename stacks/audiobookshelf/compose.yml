@@ -1,0 +1,111 @@
+name: audiobookshelf
+
+# The house audiobook library. Web player, per-user playback position, chapter
+# navigation, Audible metadata matching, and an API the iPhone clients speak.
+#
+# Deploy:  ./scripts/deploy.sh audiobookshelf
+#          or the deploy-audiobookshelf Procedure in Komodo.
+#
+# NO SECRETS. required_vars() in scripts/deploy.sh has an explicit empty entry
+# for this stack, and komodo/audiobookshelf.toml therefore has no pre_deploy or
+# post_deploy hooks at all. Audiobookshelf's admin account is created through
+# the web UI on first launch, not injected - which is why step 3 of
+# docs/audiobookshelf.md says to open it the same minute it starts.
+#
+# One container. The download automation (gluetun, qbittorrent, prowlarr,
+# shelfarr) is a SEPARATE stack, deliberately, so that the library server and
+# the thing that churns can be deployed, broken and replaced independently.
+# See docs/audiobooks.md#build-order.
+
+services:
+  audiobookshelf:
+    container_name: audiobookshelf
+
+    # Pinned, like everything else here, which is what makes auto_pull safe on
+    # the Komodo side. Confirm the tag exists before the first deploy - the
+    # GitHub releases are tagged `v2.35.1` and the container tags are not:
+    #
+    #   docker manifest inspect ghcr.io/advplyr/audiobookshelf:2.35.1 >/dev/null && echo ok
+    #
+    # Bumping this is a commit, never a UI action.
+    image: ghcr.io/advplyr/audiobookshelf:${AUDIOBOOKSHELF_VERSION:-2.35.1}
+    restart: unless-stopped
+
+    environment:
+      # Chapter timestamps, "last listened" and the sleep timer all read local
+      # time. A wrong TZ here is not cosmetic on a device someone falls asleep
+      # to.
+      TZ: ${TZ:-America/Chicago}
+
+    volumes:
+      # SQLite database: users, libraries, and - the part that actually
+      # matters - every playback position in the house. Small, and the only
+      # thing in this stack that is not re-acquirable. This is the path that
+      # belongs in the backup set; /srv/media below does not.
+      - ${AUDIOBOOKSHELF_CONFIG:-/srv/audiobookshelf/config}:/config
+
+      # Covers, cached artwork, downloaded metadata. Regenerable, but slowly.
+      - ${AUDIOBOOKSHELF_METADATA:-/srv/audiobookshelf/metadata}:/metadata
+
+      # THE LIBRARY. Read-write, not `:ro`, and that is deliberate: the
+      # built-in tools embed metadata and cover art into the files themselves,
+      # and the "store metadata with item" option writes alongside them. A
+      # read-only mount makes those fail in ways the UI reports badly.
+      #
+      # Lives under /srv/media rather than /srv/audiobookshelf because the
+      # download client will eventually need to hardlink into it, and a
+      # hardlink cannot cross a filesystem OR a bind-mount boundary. Getting
+      # this wrong later means every import silently becomes a full copy.
+      # See docs/audiobooks.md#storage.
+      - ${AUDIOBOOKSHELF_LIBRARY:-/srv/media/audiobooks}:/audiobooks
+
+      # Podcasts are a separate library type with their own downloader. Mounted
+      # now because adding a volume later is a recreate, and because leaving it
+      # out makes the podcast library type fail with a path error rather than
+      # being absent.
+      - ${AUDIOBOOKSHELF_PODCASTS:-/srv/media/podcasts}:/podcasts
+
+    networks:
+      - proxy    # reached by caddy at audiobookshelf:80
+
+    # No published ports. The container listens on 80 internally and has no LAN
+    # guard of its own - the guard is Caddy's. While books.<domain> is in the
+    # LAN-ONLY block that guard is the @notlocal handle; once it moves to the
+    # PUBLIC zone, the only thing between this and the internet is
+    # Audiobookshelf's own login. Read docs/audiobooks.md#exposure before
+    # making that move.
+
+    healthcheck:
+      # The image ships its own HEALTHCHECK. This one is written out anyway so
+      # the interval and the endpoint are visible in this file rather than in
+      # whatever the pinned tag happened to bake in.
+      #
+      # 127.0.0.1, never localhost - the container's /etc/hosts carries
+      # `::1 localhost` and busybox wget resolves one address without falling
+      # back. That cost three minutes of a Homelable deploy looking broken.
+      # See docs/decisions.md and the compose conventions.
+      #
+      # `-O /dev/null` rather than `--spider`: --spider is a busybox build-time
+      # option whose exit status has moved between alpine releases.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthcheck"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+      # Generous. Audiobookshelf runs database migrations on a version bump and
+      # a large library's first scan is slow; a tight window here makes an
+      # upgrade look like a failure.
+      start_period: 60s
+
+    # NO `user:` DIRECTIVE, and this is the footgun to remember.
+    #
+    # Audiobookshelf explicitly does not support PUID/PGID and runs as root.
+    # Files it writes into /audiobooks are therefore root-owned. That is fine
+    # today with one container. It stops being fine the moment qBittorrent -
+    # running as a different UID in the automation stack - needs to write into
+    # the same tree. When that stack lands, the fix is a shared group on the
+    # host directories plus `chmod g+ws`, decided once, not per container.
+
+networks:
+  proxy:
+    external: true

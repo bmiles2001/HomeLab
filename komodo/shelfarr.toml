@@ -1,0 +1,93 @@
+# Komodo resource definition for the shelfarr stack.
+#
+# Read komodo/beszel.toml first for why `environment` is empty, why
+# skip_secret_interp is on, and why the hooks are absolute paths with no shell
+# metacharacters. None of that is repeated here.
+#
+# ORDER: this is the THIRD stack on the Komodo path. beszel proves the path,
+# audiobookshelf proves the secretless variant, and only then this one - which
+# is the first stack where a bad deploy has a network-level consequence rather
+# than a container-level one. A half-started gluetun with qbittorrent attached
+# to it is the specific thing to avoid discovering through an unfamiliar UI.
+
+[[stack]]
+name = "shelfarr"
+description = "Audiobook automation: gluetun, qbittorrent, prowlarr, sabnzbd, shelfarr, libation. LAN-only, all of it."
+tags = ["forge"]
+
+[stack.config]
+server = "forge"
+
+files_on_host = true
+run_directory = "/home/brent/home-containers/stacks/shelfarr"
+file_paths = ["compose.yml"]
+
+# ---------------------------------------------------------------------------
+# The three fields that keep Komodo out of the secrets business
+# ---------------------------------------------------------------------------
+
+environment = ""
+env_file_path = ".env"
+skip_secret_interp = true
+
+# ---------------------------------------------------------------------------
+# The hooks
+# ---------------------------------------------------------------------------
+#
+# Unlike audiobookshelf, this stack has real secrets and the hooks are doing
+# their actual job - a VPN private key reaches compose through the rendered
+# tmpfs file and nowhere else.
+#
+# THE QUOTING RULE MATTERS HERE MORE THAN ANYWHERE ELSE IN THE REPO.
+# WireGuard private keys are base64 and routinely contain `/` and `+`;
+# OpenVPN passwords contain whatever the provider generated. komodo-env.sh
+# double-quotes and backslash-escapes `\ " $`, which round-trips all of it -
+# but a `$` in an OpenVPN password written unquoted would truncate silently,
+# and gluetun would report an authentication failure that looks like a wrong
+# password rather than a mangled one. See docs/decisions.md and the header of
+# scripts/komodo-env.sh.
+
+pre_deploy = { path = ".", command = "/home/brent/home-containers/scripts/komodo-env.sh render shelfarr" }
+post_deploy = { path = ".", command = "/home/brent/home-containers/scripts/komodo-env.sh clean shelfarr" }
+
+# ---------------------------------------------------------------------------
+# Updates
+# ---------------------------------------------------------------------------
+
+poll_for_updates = true
+
+# OFF, and more emphatically than on the other stacks. Six images from four
+# publishers, one of which is eleven months old and shipping several releases a
+# week. An unattended update here can change the download client's config
+# schema, the indexer definitions and the importer's database in one go.
+auto_update = false
+
+# Safe only because every tag in compose.yml is pinned. If a tag is ever
+# changed to `latest` this flag must be turned off in the same commit.
+auto_pull = true
+
+# =============================================================================
+# The button
+# =============================================================================
+#
+# The `home-containers` Repo resource is defined once in
+# komodo/home-containers.toml and referenced by name. Do not redeclare it.
+
+[[procedure]]
+name = "deploy-shelfarr"
+description = "Pull the repo, then redeploy the audiobook automation stack. On-demand; there is no webhook."
+tags = ["forge"]
+
+[[procedure.stages]]
+name = "Pull home-containers"
+enabled = true
+executions = [
+  { execution.type = "PullRepo", execution.params.repo = "home-containers", enabled = true }
+]
+
+[[procedure.stages]]
+name = "Deploy shelfarr"
+enabled = true
+executions = [
+  { execution.type = "DeployStack", execution.params.stack = "shelfarr", enabled = true }
+]

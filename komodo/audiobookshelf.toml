@@ -1,0 +1,112 @@
+# Komodo resource definition for the audiobookshelf stack.
+#
+# Read komodo/beszel.toml first - every comment there about why the environment
+# field is empty, why skip_secret_interp is on, and why the hooks are absolute
+# paths with no shell metacharacters applies here identically and is not
+# repeated.
+#
+# This is the SECOND stack on the Komodo path, and it should stay second.
+# docs/komodo.md#6 says the first one must be a stack that already works, so a
+# failure has exactly one possible cause. Audiobookshelf is a brand new app; if
+# it is also the first Komodo deploy, a failure could be the app, the compose
+# file, the periphery agent, the PKI handshake, the secret render or the sync,
+# and you will be bisecting six things at once. Finish beszel through Komodo,
+# then come back here.
+
+[[stack]]
+name = "audiobookshelf"
+description = "Audiobook library for the house. Deploy path is Komodo; scripts/deploy.sh remains the manual path."
+tags = ["forge"]
+
+[stack.config]
+server = "forge"
+
+# Same working copy deploy.sh uses, for the same reason as beszel: one
+# checkout, one git state, and deploy.sh's `.env` guard watching the same
+# directory this stack's pre_deploy writes into.
+files_on_host = true
+run_directory = "/home/brent/home-containers/stacks/audiobookshelf"
+file_paths = ["compose.yml"]
+
+# ---------------------------------------------------------------------------
+# The three fields that keep Komodo out of the secrets business
+# ---------------------------------------------------------------------------
+
+environment = ""
+env_file_path = ".env"
+skip_secret_interp = true
+
+# ---------------------------------------------------------------------------
+# The hooks - present even though this stack has no secrets
+# ---------------------------------------------------------------------------
+#
+# This looks like ceremony. It is not, and the reason is worth reading once.
+#
+# Komodo writes its own env file into the run directory at step 2 of every
+# deploy, before pre_deploy at step 5. With no pre_deploy, that empty REAL file
+# is simply left there. deploy.sh's guard is `[[ -f "$STACK_DIR/.env" ]]`, which
+# is true for an empty regular file - so the first Komodo deploy would
+# permanently break the manual path with:
+#
+#     ERROR: .../stacks/audiobookshelf/.env exists.
+#
+# ...for a file containing nothing, describing a stack with no secrets. A guard
+# firing on a non-problem is worse than no guard, because the next one gets
+# ignored.
+#
+# Running render/clean anyway leaves the tested resting state instead: a
+# DANGLING symlink, which `-f` follows and reads as absent. Both deploy paths
+# keep working and the guard goes back to meaning what it says.
+#
+# The cost is one Infisical path, /audiobookshelf, holding TZ. `render` calls
+# `infisical export --path=/<stack>` and needs that path to exist. TZ is not a
+# secret; it is there so the path is not empty, and the compose file's
+# `${TZ:-America/Chicago}` means a wrong value degrades rather than breaks.
+#
+# Rejected alternative: a post_deploy of `/usr/bin/rm -f .../.env` and no
+# pre_deploy. Shorter, but post_deploy is gated on `if res.deployed`, so a
+# failed deploy leaves the empty file behind and blocks deploy.sh at exactly the
+# moment you want to fall back to it.
+
+pre_deploy = { path = ".", command = "/home/brent/home-containers/scripts/komodo-env.sh render audiobookshelf" }
+post_deploy = { path = ".", command = "/home/brent/home-containers/scripts/komodo-env.sh clean audiobookshelf" }
+
+# ---------------------------------------------------------------------------
+# Updates
+# ---------------------------------------------------------------------------
+
+# Report movement on the pinned tag; never act on it. Audiobookshelf runs
+# database migrations on a version bump and its releases are frequent - this is
+# a stack where an unattended update could migrate the database holding every
+# playback position in the house while someone is mid-chapter.
+poll_for_updates = true
+auto_update = false
+
+# Safe only because the image tag is pinned in compose.yml.
+auto_pull = true
+
+# =============================================================================
+# The button
+# =============================================================================
+#
+# The `home-containers` Repo resource it pulls is defined once in
+# komodo/home-containers.toml and referenced by name here. Do not redeclare it.
+
+[[procedure]]
+name = "deploy-audiobookshelf"
+description = "Pull the repo, then redeploy audiobookshelf. On-demand; there is no webhook."
+tags = ["forge"]
+
+[[procedure.stages]]
+name = "Pull home-containers"
+enabled = true
+executions = [
+  { execution.type = "PullRepo", execution.params.repo = "home-containers", enabled = true }
+]
+
+[[procedure.stages]]
+name = "Deploy audiobookshelf"
+enabled = true
+executions = [
+  { execution.type = "DeployStack", execution.params.stack = "audiobookshelf", enabled = true }
+]

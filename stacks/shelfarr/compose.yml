@@ -1,0 +1,417 @@
+name: shelfarr
+
+# The audiobook automation stack. Six containers, named after the one you
+# actually look at.
+#
+# Deploy:  ./scripts/deploy.sh shelfarr
+#          or the deploy-shelfarr Procedure in Komodo.
+#
+#   gluetun            VPN tunnel + kill switch. Owns the network namespace
+#                      that qbittorrent and prowlarr live inside. On `proxy`,
+#                      publishes nothing.
+#   qbittorrent        torrents. No network of its own.
+#   prowlarr           indexer manager. No network of its own - deliberately,
+#                      so indexer queries ride the tunnel too.
+#   sabnzbd            usenet. NOT behind the VPN, and that is a decision with
+#                      reasons, written out on the service below.
+#   shelfarr           the request UI and the importer. The only one anybody
+#                      but you will ever open.
+#   shelfarr-libation  Audible -> DRM-free m4b, on a private network with
+#                      shelfarr and nothing else.
+#
+# Separate from stacks/audiobookshelf on purpose. That stack holds the library
+# and every playback position in the house and should be boring for years.
+# This one is built on a project that is eleven months old and will churn.
+# See docs/audiobooks.md#the-automation-layer-is-the-churn-risk.
+#
+# NOTHING HERE IS PUBLIC, EVER. Four LAN-only hostnames in the Caddyfile and no
+# published ports. A torrent client with a web UI on the open internet is a
+# compromise waiting for a slow afternoon.
+#
+# ---------------------------------------------------------------------------
+# IMAGE TAGS ARE UNVERIFIED
+# ---------------------------------------------------------------------------
+# The defaults below are best-known values, not values confirmed against the
+# registries. Run the manifest check in docs/shelfarr.md step 1 and correct
+# them in the same commit BEFORE the first deploy. A tag that does not exist
+# fails at pull time, which is loud and cheap; a tag that exists and is wrong
+# is neither.
+
+services:
+  # ===========================================================================
+  # gluetun - the tunnel, and the only thing in this stack that reaches the
+  # internet on its own terms
+  # ===========================================================================
+  gluetun:
+    container_name: gluetun
+    image: qmcgaw/gluetun:${GLUETUN_VERSION:-v3.41.3}
+    restart: unless-stopped
+
+    cap_add:
+      - NET_ADMIN        # required to create and route the tunnel interface
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+      # Provider-specific, all of it, and all of it from Infisical /shelfarr.
+      # deploy.sh's required_vars() enforces only the two that are common to
+      # every provider - see the comment there for why the credentials are not
+      # in that list.
+      VPN_SERVICE_PROVIDER: ${VPN_SERVICE_PROVIDER:-}
+      VPN_TYPE: ${VPN_TYPE:-wireguard}
+
+      # WireGuard providers (mullvad, protonvpn, airvpn, windscribe, ...).
+      # Ignored when VPN_TYPE=openvpn.
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:-}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:-}
+      WIREGUARD_PRESHARED_KEY: ${WIREGUARD_PRESHARED_KEY:-}
+
+      # OpenVPN providers (private internet access, and older configs).
+      # Ignored when VPN_TYPE=wireguard.
+      OPENVPN_USER: ${OPENVPN_USER:-}
+      OPENVPN_PASSWORD: ${OPENVPN_PASSWORD:-}
+
+      # Exit selection. Leave blank for "any server this provider has".
+      # A country close to you is worth setting - latency here is felt on
+      # every indexer query, not just on downloads.
+      SERVER_COUNTRIES: ${SERVER_COUNTRIES:-}
+
+      # THE VARIABLE THAT MAKES THE WEB UIS REACHABLE, and the first thing to
+      # check when qBittorrent's page hangs instead of loading.
+      #
+      # The kill switch is a firewall, and it blocks by default in both
+      # directions. Caddy lives on `proxy` at 172.18.0.0/16 - the subnet
+      # bootstrap.sh pins explicitly (see docs/public-access.md#the-subnet-is-
+      # now-pinned) - and without this line the reply packets to Caddy are
+      # dropped along with everything else that is not the tunnel.
+      #
+      # If that pinned subnet ever changes, this breaks and the symptom is a
+      # reverse proxy timeout, which looks like an application fault.
+      FIREWALL_OUTBOUND_SUBNETS: ${GLUETUN_OUTBOUND_SUBNETS:-172.18.0.0/16}
+
+      # Off by default. ProtonVPN and PIA support it and qBittorrent seeds
+      # better with it; Mullvad removed it entirely in 2023. Turning it on for
+      # a provider that does not support it is a startup error, not a silent
+      # no-op, which is the good kind of failure.
+      VPN_PORT_FORWARDING: ${VPN_PORT_FORWARDING:-off}
+
+      # How long gluetun waits for the tunnel to come up before it decides the
+      # connection is bad and cycles it. The default is 6s, which is optimistic
+      # on a cold start when the provider's server list is being fetched.
+      HEALTH_VPN_DURATION_INITIAL: 30s
+
+    volumes:
+      # Server lists and the provider data gluetun refreshes for itself.
+      # Without this it re-downloads them on every start.
+      - ${GLUETUN_DATA:-/srv/shelfarr/gluetun}:/gluetun
+
+    networks:
+      - proxy    # caddy reaches qbittorrent at gluetun:8080 and prowlarr at gluetun:9696
+
+    # No published ports. The two containers below have no network identity of
+    # their own, so THEIR ports are published by THIS service - which here
+    # means published to the `proxy` network only, and to nothing else.
+
+    healthcheck:
+      # gluetun's built-in check. It tests that traffic actually leaves through
+      # the tunnel, not merely that the process is alive, which is exactly the
+      # distinction that matters for a kill switch.
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # qbittorrent - inside the tunnel
+  # ===========================================================================
+  qbittorrent:
+    container_name: qbittorrent
+    image: lscr.io/linuxserver/qbittorrent:${QBITTORRENT_VERSION:-5.1.2}
+    restart: unless-stopped
+
+    # THE LINE THAT MAKES THIS SAFE. This container gets gluetun's network
+    # namespace: same interfaces, same routing table, same firewall. If the
+    # tunnel drops, this container has no route to anywhere - not a policy, a
+    # physical fact about its network stack.
+    #
+    # Consequences that will confuse you later if they are not read now:
+    #   - it can have NO `networks:` key and NO `ports:` key. Compose rejects
+    #     both alongside network_mode, and 8080 is published by gluetun above.
+    #   - Caddy proxies to `gluetun:8080`, never `qbittorrent:8080` - there is
+    #     no such name on any network.
+    #   - it reaches sabnzbd and shelfarr by name only because gluetun is on
+    #     `proxy`. Take gluetun off that network and this goes deaf.
+    network_mode: "service:gluetun"
+
+    depends_on:
+      gluetun:
+        # Not just `started`. Without the tunnel up first, qBittorrent's first
+        # tracker announces go out before the firewall is loaded.
+        condition: service_healthy
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+      # The shared media identity. See docs/shelfarr.md#file-ownership - this
+      # is the whole reason a `media` user exists on forge.
+      PUID: ${MEDIA_UID:-3000}
+      PGID: ${MEDIA_GID:-3000}
+
+      # 002, not the linuxserver default of 022. Group-writable is the point:
+      # shelfarr runs as the same group and has to be able to move, hardlink
+      # and delete what this container wrote.
+      UMASK: "002"
+
+      WEBUI_PORT: 8080
+      TORRENTING_PORT: 6881
+
+      # NOT SET HERE, AND IT WILL BITE ON FIRST LOAD: qBittorrent rejects
+      # requests whose Host header it does not recognise, and presents that as
+      # a bare "Unauthorized" with nothing in the UI explaining why. There is
+      # no environment variable for it - it is a setting inside
+      # /config/qBittorrent/qBittorrent.conf and it has to be turned off after
+      # the container has written that file once. Step 6 of docs/shelfarr.md.
+
+    volumes:
+      - ${QBITTORRENT_CONFIG:-/srv/shelfarr/qbittorrent}:/config
+
+      # ONE MOUNT, AT THE SAME PATH IT HAS ON THE HOST. Not /downloads.
+      #
+      # This is the hardlink rule and it is the single easiest thing to get
+      # wrong in this file. A hardlink cannot cross a mount boundary, and two
+      # separate bind mounts of the same filesystem are two mount boundaries -
+      # so mounting /srv/media/downloads and /srv/media/audiobooks separately
+      # makes every import a full byte-for-byte copy, silently, forever.
+      #
+      # Same path inside as outside means the paths in qBittorrent's settings,
+      # shelfarr's settings and your ssh session are all the same string, which
+      # removes the other classic failure - a path mapping that is wrong in one
+      # of three places.
+      - ${MEDIA_ROOT:-/srv/media}:/srv/media
+
+    healthcheck:
+      # 127.0.0.1, and here it is load-bearing rather than conventional: this
+      # container shares gluetun's namespace, where `localhost` resolves to
+      # ::1 first and the WebUI is IPv4-only.
+      test: ["CMD", "curl", "-f", "-s", "-o", "/dev/null", "http://127.0.0.1:8080"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ===========================================================================
+  # prowlarr - also inside the tunnel, and that is the point
+  # ===========================================================================
+  prowlarr:
+    container_name: prowlarr
+    image: lscr.io/linuxserver/prowlarr:${PROWLARR_VERSION:-2.0.5}
+    restart: unless-stopped
+
+    # Behind the VPN with qBittorrent rather than on `proxy` with sabnzbd.
+    #
+    # Prowlarr is the container that talks to indexers - it searches them,
+    # authenticates to them and refreshes their capabilities on a timer. Those
+    # queries are the part of this stack that most obviously identifies the
+    # house, and they happen continuously whether or not anything is
+    # downloading. Leaving them on the home address while the actual transfers
+    # are tunnelled would be protecting the loud half and not the persistent
+    # half.
+    #
+    # It costs one thing: Caddy reaches it at gluetun:9696, so a gluetun
+    # restart takes the indexer UI down with the torrent UI.
+    network_mode: "service:gluetun"
+
+    depends_on:
+      gluetun:
+        condition: service_healthy
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+      PUID: ${MEDIA_UID:-3000}
+      PGID: ${MEDIA_GID:-3000}
+      UMASK: "002"
+
+    volumes:
+      - ${PROWLARR_CONFIG:-/srv/shelfarr/prowlarr}:/config
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "-o", "/dev/null", "http://127.0.0.1:9696/ping"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ===========================================================================
+  # sabnzbd - deliberately NOT behind the VPN
+  # ===========================================================================
+  sabnzbd:
+    container_name: sabnzbd
+    image: lscr.io/linuxserver/sabnzbd:${SABNZBD_VERSION:-4.5.5}
+    restart: unless-stopped
+
+    # Three reasons, and the first one is the real one:
+    #
+    # 1. There is no swarm. Usenet is a single authenticated TLS connection to
+    #    a provider you pay, who already knows exactly who you are. Nobody else
+    #    observes the transfer, so the VPN hides nothing that is not already
+    #    disclosed - unlike a torrent, where the address is published to every
+    #    peer.
+    # 2. Throughput. SABnzbd with 20-50 connections will saturate the line;
+    #    userspace WireGuard in a container will not, and this is the one
+    #    workload here that can actually notice.
+    # 3. Blast radius. Behind gluetun, a tunnel restart kills usenet downloads
+    #    too, and then the fallback path fails at the same moment as the
+    #    primary.
+    #
+    # If this ever needs to change, it is one `network_mode` line and moving
+    # the Caddy upstream from sabnzbd:8080 to gluetun:8081.
+    networks:
+      - proxy
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+      PUID: ${MEDIA_UID:-3000}
+      PGID: ${MEDIA_GID:-3000}
+      UMASK: "002"
+
+    volumes:
+      - ${SABNZBD_CONFIG:-/srv/shelfarr/sabnzbd}:/config
+      # Same single mount at the same path, for the same hardlink reason.
+      - ${MEDIA_ROOT:-/srv/media}:/srv/media
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "-o", "/dev/null", "http://127.0.0.1:8080"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ===========================================================================
+  # shelfarr - the request UI and the importer
+  # ===========================================================================
+  shelfarr:
+    container_name: shelfarr
+    image: ghcr.io/pedro-revez-silva/shelfarr:${SHELFARR_VERSION:-0.32.3}
+    restart: unless-stopped
+
+    depends_on:
+      # Started, not healthy. Shelfarr's job queue tolerates a download client
+      # being down and retries; blocking its startup on theirs would mean a
+      # VPN outage takes the request UI offline too, which is the one part of
+      # this stack that should stay up so you can see what is stuck.
+      - gluetun
+      - sabnzbd
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+      PUID: ${MEDIA_UID:-3000}
+      PGID: ${MEDIA_GID:-3000}
+
+      # Rails runs its background job queue inside the web process rather than
+      # as a second container. Upstream's own default; noted because a missing
+      # worker presents as requests that are accepted and then never happen.
+      SOLID_QUEUE_IN_PUMA: "1"
+
+      # The libation sidecar, reachable only on the private network below.
+      SHELFARR_LIBATION_URL: http://shelfarr-libation:8080
+
+      # `never`, not the default `auto`. On `auto` this container walks and
+      # chowns every mounted path at startup, which on a library of thousands
+      # of files is a slow boot and a surprising one - it will happily rewrite
+      # ownership that step 4 of docs/shelfarr.md set deliberately. The host
+      # directories are prepared once, correctly, by hand.
+      CHOWN_ON_START: never
+
+    volumes:
+      # Rails storage: SQLite database, the RAILS_MASTER_KEY it generates on
+      # first run, and the job queue. Small, and worth backing up - losing it
+      # loses the request history and every service credential typed into the
+      # UI.
+      - ${SHELFARR_DATA:-/srv/shelfarr/shelfarr}:/rails/storage
+
+      # ONE MOUNT, SAME PATH. Upstream's example mounts /audiobooks, /ebooks
+      # and /downloads as three separate binds; that is the hardlink footgun
+      # again, so this repo does not follow it. Point shelfarr's library and
+      # download paths at /srv/media/... in its own settings instead - step 7
+      # of docs/shelfarr.md. If a future version turns out to hardcode those
+      # three container paths, that is the moment to revisit, not before.
+      - ${MEDIA_ROOT:-/srv/media}:/srv/media
+
+      # Shared with the libation sidecar - the control token it authenticates
+      # with. A named volume rather than a bind because neither side's content
+      # is meaningful outside the pair.
+      - libation_control:/libation/control
+
+    networks:
+      - proxy              # caddy reaches it at shelfarr:80
+      - shelfarr-internal  # and it reaches libation here
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "-o", "/dev/null", "http://127.0.0.1/up"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      # Rails migrations run on boot and the first one builds the schema.
+      start_period: 90s
+
+  # ===========================================================================
+  # shelfarr-libation - Audible -> DRM-free m4b
+  # ===========================================================================
+  shelfarr-libation:
+    container_name: shelfarr-libation
+    image: ghcr.io/pedro-revez-silva/shelfarr-libation:${SHELFARR_VERSION:-0.32.3}
+    restart: unless-stopped
+
+    # NOT on `proxy`. It has no hostname in the Caddyfile and no reason to be
+    # reachable by anything except shelfarr - same shape as homelable's backend
+    # sitting off the proxy network behind its own frontend.
+    #
+    # This container holds an authenticated Audible session. That is a real
+    # credential for a real account with a payment method attached, and it is
+    # the strongest argument in this stack for keeping something unreachable.
+    networks:
+      - shelfarr-internal
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+      LIBATION_FILES_DIR: /config
+      LIBATION_BOOKS_DIR: /data
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+
+      # Conversions are single-threaded and CPU-hungry. More than one at a
+      # time on this box competes with Frigate's detectors for cores.
+      COMPANION_MAX_ACTIVE_JOBS: ${LIBATION_MAX_JOBS:-1}
+
+    volumes:
+      # The Audible account session and Libation's own settings.
+      - libation_config:/config
+      # Where converted m4b files land before shelfarr imports them. Named
+      # rather than under /srv/media on purpose: this is a staging area, and
+      # anything that reaches the library should get there through an import
+      # that names and organises it, not by appearing in the library folder.
+      - libation_books:/data
+      - libation_control:/libation/control
+
+    healthcheck:
+      test: ["CMD", "/companion/Shelfarr.Libation.Companion", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  libation_config:
+  libation_books:
+  libation_control:
+
+networks:
+  proxy:
+    external: true
+
+  # Created by compose, not by bootstrap.sh. Nothing outside this stack has any
+  # business on it, so it does not need a pinned subnet the way `proxy` does.
+  shelfarr-internal:
+    driver: bridge

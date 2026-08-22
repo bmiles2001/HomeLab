@@ -51,6 +51,16 @@ usage() {
 # bootstrap.sh check 6c fails if a stack directory has no case here.
 required_vars() {
   case "$1" in
+    # No secrets. Audiobookshelf's root account is created through its own web
+    # UI on first launch, and every other value in that compose file is a path
+    # or a version with a `${VAR:-default}`. Entered explicitly rather than left
+    # out, so bootstrap.sh check 6c reads this as "considered and empty".
+    #
+    # An Infisical path /audiobookshelf still has to EXIST, holding TZ, even
+    # though nothing here is required. That is not for this script - it is for
+    # scripts/komodo-env.sh, whose `render` needs a path to export. See
+    # docs/audiobookshelf.md#why-a-stack-with-no-secrets-still-gets-the-hooks.
+    audiobookshelf) echo "" ;;
     # DOMAIN is duplicated from /caddy - deploy.sh reads one Infisical path
     # per stack. KEY and TOKEN are minted by the hub itself, so they cannot
     # exist before its first run: the hub is started once without this script,
@@ -85,6 +95,22 @@ required_vars() {
     # name added here is enforced on the Komodo deploy path too.
     komodo)        echo "KOMODO_DATABASE_USERNAME KOMODO_DATABASE_PASSWORD KOMODO_JWT_SECRET KOMODO_WEBHOOK_SECRET KOMODO_INIT_ADMIN_USERNAME KOMODO_INIT_ADMIN_PASSWORD DOMAIN" ;;
     mosquitto)     echo "MQTT_USER MQTT_PASSWORD" ;;
+    # Only the two variables every gluetun provider needs. The credentials are
+    # deliberately NOT listed, and that is not an oversight:
+    #
+    #   - which ones apply depends on VPN_TYPE. A wireguard setup has no
+    #     OPENVPN_USER and an openvpn setup has no WIREGUARD_PRIVATE_KEY, so
+    #     any fixed list here fails one of the two configurations.
+    #   - the bar for this table is "an empty value is SILENTLY wrong". A
+    #     blank wireguard key is not silent: gluetun refuses to start, says
+    #     which variable is missing, and the kill switch means nothing leaks
+    #     while it is down. That is the failure mode this check exists to
+    #     manufacture, already provided by the app.
+    #
+    # VPN_SERVICE_PROVIDER and VPN_TYPE are here because a blank VPN_TYPE
+    # defaults to wireguard in the compose file and a blank provider produces
+    # an error naming neither.
+    shelfarr)      echo "VPN_SERVICE_PROVIDER VPN_TYPE" ;;
     # No secrets. The server's admin and claim passwords are set through the
     # in-game Server Manager and stored in the game's own config under
     # /srv/satisfactory/saved - there is nothing for compose to interpolate.

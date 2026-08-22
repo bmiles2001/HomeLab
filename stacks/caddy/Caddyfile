@@ -273,6 +273,81 @@ photos.{env.DOMAIN} {
 		}
 	}
 
+	# --- books.<domain> - Audiobookshelf ------------------------------------
+	# The audiobook library. Upstream listens on plain 80 inside the container
+	# and publishes no port, so this block is the only way in.
+	#
+	# THIS ONE IS EXPECTED TO MOVE. Every other hostname in this zone is
+	# LAN-only permanently and says so; this is the first block written here
+	# with the intention of promoting it to the PUBLIC zone above, because the
+	# whole point is listening in the car. That move is a separate commit with
+	# its own decisions.md entry, its own DNS record and its own log file - see
+	# docs/audiobooks.md#exposure. Until then it is guarded like everything
+	# else, which means the phone only syncs on home wifi.
+	#
+	# Do not promote it before the root account exists. Audiobookshelf hands
+	# the first account created the admin role, exactly like Immich, and
+	# "first" stops meaning you the moment the hostname answers publicly.
+	@audiobookshelf host books.{env.DOMAIN}
+	handle @audiobookshelf {
+		reverse_proxy audiobookshelf:80 {
+			# Playback position, scan progress and the "now playing" state all
+			# arrive over a long-lived socket. Same buffering symptom as the
+			# Frigate, Home Assistant, Beszel, Homelable and Komodo blocks
+			# above - the page loads once and then never moves.
+			flush_interval -1
+		}
+	}
+
+	# --- request.<domain> - Shelfarr ----------------------------------------
+	# The request UI for the audiobook automation. The only part of the
+	# shelfarr stack anyone but you would open, and still LAN-only: it holds
+	# the API keys for every other service in that stack.
+	@shelfarr host request.{env.DOMAIN}
+	handle @shelfarr {
+		reverse_proxy shelfarr:80 {
+			# Import progress and job status stream. Same buffering symptom as
+			# every other block in this zone.
+			flush_interval -1
+		}
+	}
+
+	# --- torrents.<domain> - qBittorrent ------------------------------------
+	# UPSTREAM IS `gluetun`, NOT `qbittorrent`, AND THAT IS NOT A TYPO.
+	#
+	# The qbittorrent container runs with network_mode: "service:gluetun", so
+	# it has no address and no name on any network - its port is published by
+	# gluetun. `reverse_proxy qbittorrent:8080` here would fail DNS resolution
+	# at request time and present as a 502 that looks like the app is down.
+	# See the comments in stacks/shelfarr/compose.yml.
+	#
+	# If this returns a bare "Unauthorized" rather than a login page, it is
+	# qBittorrent's Host header validation, not Caddy. Turn it off in
+	# qBittorrent.conf - docs/shelfarr.md step 6.
+	@qbittorrent host torrents.{env.DOMAIN}
+	handle @qbittorrent {
+		reverse_proxy gluetun:8080
+	}
+
+	# --- indexers.<domain> - Prowlarr ---------------------------------------
+	# Also inside gluetun's network namespace, so also proxied through it. A
+	# gluetun restart takes this UI down along with torrents.<domain>; that is
+	# the accepted cost of putting indexer queries through the tunnel.
+	@prowlarr host indexers.{env.DOMAIN}
+	handle @prowlarr {
+		reverse_proxy gluetun:9696
+	}
+
+	# --- usenet.<domain> - SABnzbd ------------------------------------------
+	# The one download-adjacent container that is NOT behind the VPN, so this
+	# is the one that is addressed by its own container name. If that ever
+	# changes, this line moves to gluetun:8081 and the port has to be
+	# republished on gluetun - two edits, not one.
+	@sabnzbd host usenet.{env.DOMAIN}
+	handle @sabnzbd {
+		reverse_proxy sabnzbd:8080
+	}
+
 	# --- template: copy this block for each new app ------------------------
 	# @myapp host myapp.{env.DOMAIN}
 	# handle @myapp {
