@@ -181,6 +181,30 @@ services:
       # must match `connect_as` in /etc/komodo/periphery.config.toml exactly.
       KOMODO_FIRST_SERVER_NAME: forge
 
+      # THE OTHER HALF OF THE HANDSHAKE. v2's PKI is mutual and the two
+      # directions are not symmetric in effort:
+      #
+      #   agent trusts Core - automatic. Periphery learns Core's key during the
+      #     Noise handshake and writes it to /etc/komodo/keys/core.pub itself.
+      #     A "Failed to read public key at core.pub" warning on first start is
+      #     that happening, not an error.
+      #   Core trusts agent - MANUAL, and this line is it. Without it Core
+      #     rejects the connection with "Core failed to validate Periphery
+      #     public key" and the Server sits at NOT OK with no other symptom.
+      #
+      # Upstream's all-container setup hides this because Core and Periphery
+      # share one `keys` volume. Our agent is a systemd service on the host, so
+      # its public key has to be copied into the volume by hand:
+      #
+      #   sudo cp /etc/komodo/keys/periphery.pub /srv/komodo/keys/periphery.pub
+      #   sudo chmod 644 /srv/komodo/keys/periphery.pub
+      #
+      # ORDERING ON A REBUILD: the agent has to have run once before this file
+      # exists. Deploy this stack, install the agent, copy the key, redeploy.
+      # A public key is not a secret, so it lives on disk and in git-adjacent
+      # host state rather than in Infisical.
+      KOMODO_PERIPHERY_PUBLIC_KEY: file:/config/keys/periphery.pub
+
       # Left ON deliberately. This is the setting that turns a deploy button
       # into a double-click; on a tool that can tear down the photo library,
       # the extra dialog is worth the two seconds.

@@ -304,6 +304,11 @@ The other two never enter a URI, so base64 is fine for them.
 | `KOMODO_INIT_ADMIN_PASSWORD` | your login password |
 | `DOMAIN` | `brent-miles.com`, duplicated from `/caddy` as usual |
 
+**Seven keys, and that is the whole list.** Other `KOMODO_*` names appear in
+`stacks/komodo/compose.yml` — `KOMODO_FIRST_SERVER_NAME`, `KOMODO_TITLE`,
+`KOMODO_JWT_TTL` and so on — but those are literals written into the compose
+file, not interpolated variables. Nothing else belongs in Infisical.
+
 `KOMODO_INIT_ADMIN_*` are read only on the first launch against an empty
 database. They live in Infisical anyway because the day they matter again is
 the day the database is gone and you are rebuilding.
@@ -369,27 +374,79 @@ still deploys through `scripts/deploy.sh`.
 Not a container. See [Periphery](#periphery) above for why, and set up
 `/etc/komodo/infisical-identity` from that section first.
 
+First, confirm the UI's Servers list already contains one called **`forge`**.
+`--connect-as` has to match an existing Server, and that Server is created only
+on Core's *first* launch against an empty database. If the list is empty, stop:
+the fix is an Onboarding Key from Server settings passed as `--onboarding-key`,
+not a retry.
+
+`forge` comes from `KOMODO_FIRST_SERVER_NAME` in `stacks/komodo/compose.yml`,
+where it is a **literal, not an interpolated variable**. It is not one of the
+seven keys in Infisical and there is nothing to add there — change it in the
+compose file if you want a different name.
+
+Download the installer rather than piping it into `sudo`:
+
 ```bash
-sudo python3 <(curl -sfL https://raw.githubusercontent.com/moghtech/komodo/main/scripts/setup-periphery.py) \
+curl -sfL https://raw.githubusercontent.com/moghtech/komodo/main/scripts/setup-periphery.py \
+  -o /tmp/setup-periphery.py
+sudo python3 /tmp/setup-periphery.py \
   --core-address ws://127.0.0.1:9120 \
   --connect-as forge
 ```
 
-`--connect-as` must match `KOMODO_FIRST_SERVER_NAME` in `compose.yml` exactly.
+> `sudo python3 <(curl ...)` **does not work**, and the error is misleading:
+> `python3: can't open file '/dev/fd/63': No such file or directory`. `sudo`
+> closes every file descriptor above 2 before exec'ing, so the fd the shell
+> created for the process substitution is gone by the time python starts. This
+> is not a problem with the script or the URL. Downloading first is also the
+> better habit — it lets you read what is about to run as root.
+
 Outbound mode is used deliberately: the agent dials Core over the loopback
 publish, so nothing on this box listens for it and there is no firewall rule to
 maintain.
 
-Then give the agent Core's public key, so it will accept the connection:
+### 5b. Complete the handshake — both directions
+
+**v2's PKI is mutual, and the two directions cost different amounts of work.**
+Getting only one of them presents as a Server stuck at `NOT OK` with
+`Core failed to validate Periphery public key`, and nothing else wrong.
+
+**Agent trusts Core — automatic.** Periphery learns Core's public key during the
+Noise handshake and writes it to `/etc/komodo/keys/core.pub` itself. A
+`WARN PeripheryStartup: Failed to read public key at "/etc/komodo/keys/core.pub"`
+on first start is that fallback happening, not a failure. Pin it afterwards so
+later connections are checked rather than trusted on sight:
 
 ```bash
-sudo cp /srv/komodo/keys/core.pub /etc/komodo/keys/core.pub
 sudo tee -a /etc/komodo/periphery.config.toml >/dev/null <<'EOF'
 core_public_keys = "file:/etc/komodo/keys/core.pub"
 EOF
+```
+
+**Core trusts the agent — manual.** Upstream's all-container setup hides this
+step because Core and Periphery share one `keys` volume; a host-installed agent
+does not, so its public key has to be carried across:
+
+```bash
+sudo cp /etc/komodo/keys/periphery.pub /srv/komodo/keys/periphery.pub
+sudo chmod 644 /srv/komodo/keys/periphery.pub
+```
+
+`compose.yml` already carries the matching
+`KOMODO_PERIPHERY_PUBLIC_KEY: file:/config/keys/periphery.pub`. Restart both
+ends:
+
+```bash
+./scripts/deploy.sh komodo
 sudo systemctl restart periphery
 sudo systemctl status periphery --no-pager
 ```
+
+The Server's own "Periphery Public Key" field in the UI does the same job, and
+is the right answer for a *second* server later. Do not use it for `forge` — it
+would live only in Komodo's database, which is exactly the drift the managed
+Resource Sync in step 7 exists to prevent.
 
 `/etc/komodo/periphery.config.toml` is **host state and is not in this repo**,
 exactly like `/etc/cockpit/cockpit.conf`. If forge is rebuilt, this and the
