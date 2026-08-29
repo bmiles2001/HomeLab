@@ -213,9 +213,16 @@ restricts the code to their own domain. This feeds their hosted page a file.
 | `saves` service | `stacks/satisfactory/compose.yml` | serve that one directory over HTTP on `proxy` |
 | `spaghetti.<domain>` block | `stacks/caddy/Caddyfile` | TLS, the LAN guard, and the CORS headers |
 
-**Nothing writes into `SaveGames/`.** The updater creates one relative symlink
-in `/srv/satisfactory/latest/`, a directory of its own, and both container
-mounts are read-only.
+**Nothing writes into the save directory.** The updater creates one relative
+symlink in `/srv/satisfactory/latest/`, a directory of its own, and both
+container mounts are read-only.
+
+The updater searches recursively from `/srv/satisfactory/saved` and does not
+care which layout this server uses — upstream's docs, this image and this
+repo's own runbook have each named a different one, and the server adds a
+directory per session underneath. Rooting the search at `saved/` is the fix for
+the first version of this, which named `saved/SaveGames` and was skipped by its
+own systemd condition on a box where that directory does not exist.
 
 #### Why a timer and not a `.path` unit
 
@@ -285,7 +292,8 @@ curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS \
 |---|---|
 | Map errors, browser console says CORS | Caddy was reloaded rather than recreated after a `git pull` |
 | Map loads once, never updates | The preflight isn't answering 204, so `If-Modified-Since` never reaches the file server |
-| 404 on `latest.sav` | The timer hasn't run, or `SAVE_ROOT` doesn't match where this server actually writes — check `journalctl -u satisfactory-latest-save` |
+| 404 on `latest.sav`, and the journal shows lines that read `<unit> - <description>` with no `Starting` prefix | Those are skip messages, not start messages: `ConditionPathIsDirectory` names a directory that does not exist, so the script never ran. `systemctl status satisfactory-latest-save` prints the condition it failed |
+| 404 on `latest.sav`, journal otherwise quiet | No `.sav` under `SAVE_ROOT` yet. `find /srv/satisfactory/saved -name '*.sav'` — if that finds files, the root is wrong |
 | `satisfactory-saves` is unhealthy | Expected until the first autosave exists. After that, the symlink is dangling — the mounts are siblings under `/saves` and the link must stay relative |
 | Nothing resolves, from a phone on cellular | Working as designed |
 

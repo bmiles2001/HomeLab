@@ -18,12 +18,19 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------- config ---
-# Searched RECURSIVELY. Upstream's own nginx example puts saves in
-# .../SaveGames/server/, this repo's runbook has historically written
-# .../SaveGames/, and the server creates a directory per session under there.
-# Recursing means the script does not care which of those is true on the day,
-# and keeps working when a new session directory appears.
-SAVE_ROOT="${SAVE_ROOT:-/srv/satisfactory/saved/SaveGames}"
+# Searched RECURSIVELY, and rooted at `saved/` rather than at any deeper path
+# on purpose. Upstream's nginx example puts saves in .../SaveGames/server/,
+# this repo's runbook has written .../SaveGames/, the image has used
+# .../saved/server/, and the server creates a directory per session underneath
+# whichever it is. The first version of this script named SaveGames/ and was
+# skipped silently by its own systemd condition on a box where that directory
+# does not exist.
+#
+# So: start at the one directory that is guaranteed to be there - `saved/` is
+# what the container itself creates inside the bind mount - and recurse. This
+# cannot pick up a backup by mistake, because backups/ is a SIBLING of saved/,
+# not a child of it.
+SAVE_ROOT="${SAVE_ROOT:-/srv/satisfactory/saved}"
 
 LATEST_DIR="${LATEST_DIR:-/srv/satisfactory/latest}"
 LINK_NAME="${LINK_NAME:-latest.sav}"
