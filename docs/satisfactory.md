@@ -301,13 +301,25 @@ sudo rm -f /srv/satisfactory/latest/latest.sav
 # The file is there, and it is the size of a save rather than of an error page.
 curl -sI https://spaghetti.brent-miles.com/latest.sav
 
-# The CORS header the map depends on.
+# The CORS header on the response itself.
 curl -sI -H 'Origin: https://satisfactory-calculator.com' \
   https://spaghetti.brent-miles.com/latest.sav | grep -i '^access-control'
 
-# The preflight. Anything other than 204 here means the map will load the save
-# once and then never refresh.
-curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS \
+# THE PREFLIGHT, sent exactly as the browser sends it. A 204 on its own is not
+# enough - read Access-Control-Allow-Headers and confirm it contains
+# access-control-allow-origin. That is the entry the map needs, it is the one
+# that has already been wrong once, and a plain `curl -X OPTIONS` will not
+# catch it because curl sends no Access-Control-Request-Headers of its own.
+curl -s -D - -o /dev/null -X OPTIONS \
+  -H 'Origin: https://satisfactory-calculator.com' \
+  -H 'Access-Control-Request-Method: GET' \
+  -H 'Access-Control-Request-Headers: access-control-allow-origin,if-modified-since' \
+  https://spaghetti.brent-miles.com/latest.sav | grep -iE '^HTTP|^access-control'
+
+# The auto-refresh path: 304 while the symlink has not moved, 200 once it has.
+LM=$(curl -sI https://spaghetti.brent-miles.com/latest.sav \
+     | grep -i '^last-modified' | cut -d' ' -f2- | tr -d '\r')
+curl -s -o /dev/null -w '%{http_code}\n' -H "If-Modified-Since: $LM" \
   https://spaghetti.brent-miles.com/latest.sav
 ```
 
@@ -315,7 +327,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS \
 
 | Symptom | Cause |
 |---|---|
-| Map errors, browser console says CORS | Caddy was reloaded rather than recreated after a `git pull` |
+| Map errors, console says `Request header field access-control-allow-origin is not allowed` | That entry is missing from `Access-Control-Allow-Headers`. The map's XHR really does send a request header by that name — see the comment on the `spaghetti` block in the Caddyfile |
+| Map errors, console says CORS for some other reason | Caddy was reloaded rather than recreated after a `git pull` |
+| Map errors, console mentions "local network" or `ERR_BLOCKED_BY_PRIVATE_NETWORK_ACCESS_CHECKS` | Not CORS. Chrome 142+ blocks a public-origin page from reaching RFC1918 addresses, and the old server-side opt-in was removed in favour of a permission prompt only the site can trigger — this whole design would then need public exposure. Not what happened on 2026-08-29, but it is the one thing that could kill it |
 | Map loads once, never updates | The preflight isn't answering 204, so `If-Modified-Since` never reaches the file server |
 | 404 on `latest.sav` | `docker logs satisfactory-saves-updater`. "no .sav files under /saves/saved yet" means the server hasn't autosaved; anything else names itself. Cross-check with `find /srv/satisfactory/saved -name '*.sav'` |
 | `satisfactory-saves-updater` is unhealthy | The loop has stalled or died — the heartbeat is older than three intervals. The logs are the next stop; the map is serving a stale save until it comes back |

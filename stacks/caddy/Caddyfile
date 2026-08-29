@@ -286,13 +286,32 @@ photos.{env.DOMAIN} {
 	# the wildcard already resolves this name to 10.0.0.4 and the wildcard cert
 	# already covers it.
 	#
-	# Upstream's own nginx sample sets
-	#   Access-Control-Allow-Headers "Access-Control-Allow-Origin"
-	# which is cargo cult: that is a response header, not a request one, and it
-	# permits nothing the map actually sends. The list below is the real one.
-	# If-Modified-Since is the load-bearing entry - it is what drives the map's
-	# auto-refresh and it is NOT a CORS-safelisted request header, so leaving it
-	# out produces a map that loads the save once and then never moves again.
+	# TWO ENTRIES IN Access-Control-Allow-Headers ARE LOAD-BEARING AND NEITHER IS
+	# OBVIOUS. Both were learned the hard way; do not tidy either of them away.
+	#
+	# `Access-Control-Allow-Origin` is a RESPONSE header and has no business
+	# being sent by a client - but the map's XHR sets it on the request anyway.
+	# So the browser asks for it by name in the preflight, and a preflight that
+	# does not permit it fails outright with:
+	#
+	#   Request header field access-control-allow-origin is not allowed by
+	#   Access-Control-Allow-Headers in preflight response
+	#
+	# Upstream's nginx sample allows exactly this one header and never says why,
+	# which reads like cargo cult right up until you delete it. This config did
+	# delete it, on 2026-08-29, and that is the whole story of why the map
+	# refused to load a save that curl could fetch perfectly.
+	#
+	# `If-Modified-Since` is what drives the map's auto-refresh, and it is not a
+	# CORS-safelisted request header either. Without it the map loads the save
+	# once and then never moves again.
+	#
+	# If the map ever adds another header and this breaks the same way, the
+	# blunt fix is to echo the request back:
+	#
+	#   Access-Control-Allow-Headers {http.request.header.Access-Control-Request-Headers}
+	#
+	# It works - it is just less honest about what the map actually needs.
 	#
 	# Last-Modified needs no Access-Control-Expose-Headers entry; it is already
 	# on the safelist.
@@ -301,7 +320,7 @@ photos.{env.DOMAIN} {
 		header {
 			Access-Control-Allow-Origin "https://satisfactory-calculator.com"
 			Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
-			Access-Control-Allow-Headers "If-Modified-Since, If-None-Match, Range"
+			Access-Control-Allow-Headers "Access-Control-Allow-Origin, If-Modified-Since, If-None-Match, Range"
 			Access-Control-Max-Age "86400"
 		}
 
