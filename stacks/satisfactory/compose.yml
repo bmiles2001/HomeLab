@@ -83,7 +83,7 @@ services:
       # Defaults, written out because they are the knobs worth knowing exist:
       #
       # AUTOSAVENUM=5           rotating autosaves kept
-      # MAXTICKRATE=30          sim tick rate ceiling
+      MAXTICKRATE: 60            # sim tick rate ceiling
       # MAXOBJECTS=2162688      object limit; raise only if the log complains
       # SERVERSTREAMING=true    asset streaming; leave on
       # TIMEOUT=30              client timeout in seconds
