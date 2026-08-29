@@ -90,7 +90,7 @@ fi
 for d in /srv/immich/data /srv/caddy /srv/infisical /srv/backups/infisical \
          /srv/frigate/media /srv/frigate/models /srv/homeassistant/config \
          /srv/beszel/data /srv/beszel/agent /srv/beszel/socket /srv/.beszel \
-         /srv/satisfactory; do
+         /srv/satisfactory /srv/satisfactory/latest; do
   if [[ ! -d "$d" ]]; then
     sudo mkdir -p "$d"
     sudo chown "$(id -u):$(id -g)" "$d"

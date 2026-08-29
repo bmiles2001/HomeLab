@@ -273,6 +273,58 @@ photos.{env.DOMAIN} {
 		}
 	}
 
+	# --- spaghetti.<domain> - the Satisfactory save, on the Interactive Map --
+	# The only hostname in this file that exists to be read by a page served
+	# from somebody else's domain.
+	#
+	# satisfactory-calculator.com's Interactive Map loads a save handed to it as
+	# ?url=... and it does that fetch IN THE BROWSER. That is why the thing
+	# upstream asks for is a CORS header rather than a public address, and it is
+	# the entire reason this block gets to sit under the @notlocal guard with
+	# everything else: the only machine that has to reach it is the one you are
+	# looking at. Nothing is forwarded at the router and no DNS record is added -
+	# the wildcard already resolves this name to 10.0.0.4 and the wildcard cert
+	# already covers it.
+	#
+	# Upstream's own nginx sample sets
+	#   Access-Control-Allow-Headers "Access-Control-Allow-Origin"
+	# which is cargo cult: that is a response header, not a request one, and it
+	# permits nothing the map actually sends. The list below is the real one.
+	# If-Modified-Since is the load-bearing entry - it is what drives the map's
+	# auto-refresh and it is NOT a CORS-safelisted request header, so leaving it
+	# out produces a map that loads the save once and then never moves again.
+	#
+	# Last-Modified needs no Access-Control-Expose-Headers entry; it is already
+	# on the safelist.
+	@spaghetti host spaghetti.{env.DOMAIN}
+	handle @spaghetti {
+		header {
+			Access-Control-Allow-Origin "https://satisfactory-calculator.com"
+			Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+			Access-Control-Allow-Headers "If-Modified-Since, If-None-Match, Range"
+			Access-Control-Max-Age "86400"
+		}
+
+		# The preflight, answered here rather than at the upstream: caddy's
+		# file-server replies 405 to OPTIONS, which fails the preflight and takes
+		# the auto-refresh down with it.
+		#
+		# Nested `handle` blocks rather than a bare `respond`, for the same
+		# reason the LAN guard above is a handle: the order is then written down
+		# here instead of inferred from Caddy's directive table.
+		@preflight method OPTIONS
+		handle @preflight {
+			respond 204
+		}
+
+		handle {
+			# No flush_interval, unlike every other block in this file. This is
+			# one large finite file rather than a live stream, and buffering is
+			# exactly what you want for it.
+			reverse_proxy satisfactory-saves:80
+		}
+	}
+
 	# --- template: copy this block for each new app ------------------------
 	# @myapp host myapp.{env.DOMAIN}
 	# handle @myapp {

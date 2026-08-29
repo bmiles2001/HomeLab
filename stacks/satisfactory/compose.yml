@@ -23,10 +23,21 @@ name: satisfactory
 #   2. IT IS REACHABLE FROM THE INTERNET on those ports, with no auth in front
 #      of them. Not "LAN-only for now" - the whole point is friends joining.
 #      What that does and does not expose is in docs/satisfactory.md#exposure.
-#   3. IT IS NOT ON THE `proxy` NETWORK. Nothing about it is HTTP, so there is
-#      nothing for Caddy to route. It gets the stack's own default bridge.
+#   3. THE GAME CONTAINER IS NOT ON THE `proxy` NETWORK. Nothing about the
+#      game is HTTP, so there is nothing for Caddy to route. It gets the
+#      stack's own default bridge. The `saves` sidecar further down IS on
+#      `proxy` - it is an ordinary static file server and is routed like
+#      everything else in the house.
 #   4. IT DOWNLOADS ~20GB ON FIRST START and takes a while to come up. That is
 #      SteamCMD fetching the game, not a hang. See the runbook.
+#
+# A FIFTH THING was added later and is a second service, not a fourth oddity:
+# `saves` serves the newest save file over plain HTTP so that the
+# Satisfactory-Calculator Interactive Map can load it from spaghetti.<domain>.
+# It publishes nothing, holds two read-only mounts, and is LAN-only like every
+# other hostname in the Caddyfile. Why that is enough - and why the map does not
+# need a public address to read it - is in
+# docs/satisfactory.md#viewing-the-save-on-the-interactive-map.
 #
 # The single most important setting is NOT in this file: turn on Auto Pause in
 # the in-game Server Manager after claiming the server. Without it an empty
@@ -151,6 +162,90 @@ services:
     # Nothing in this repo restarts on unhealthy anyway - Beszel alerting on
     # the container being gone is the real signal.
 
-    # No networks: block. This stack gets its own default bridge, which gives
-    # it outbound internet for SteamCMD and no route to any other stack. It is
-    # deliberately NOT on `proxy` - see note 3 at the top of this file.
+    # No `networks:` key on THIS service, deliberately. A top-level networks
+    # block now exists for the sidecar below, and a service that names no
+    # network still lands on compose's own `default` bridge - which is exactly
+    # what this one wants: outbound internet for SteamCMD and no route to any
+    # other stack. It is NOT on `proxy` - see note 3 at the top of this file.
+
+  # --- the save, served for the Interactive Map -------------------------------
+  #
+  # satisfactory-calculator.com's Interactive Map loads a save from any URL
+  # handed to it as ?url=... The fetch happens IN THE BROWSER, not on their
+  # servers - which is why the requirement upstream documents is a CORS header
+  # rather than a public address.
+  #
+  # That one fact is what lets this stay LAN-only, behind the @notlocal guard,
+  # with no DNS record and no port forward: the only machine that has to reach
+  # this container is the one you are sitting at.
+  #
+  # The CORS headers are NOT here. They live on the spaghetti.<domain> block in
+  # the Caddyfile, because that is where the browser's request terminates and
+  # because hostname behaviour belongs in the routing table rather than
+  # scattered across stacks.
+  saves:
+    container_name: satisfactory-saves
+    hostname: satisfactory-saves
+
+    # Stock Caddy, used as a one-line static file server. No Caddyfile, no
+    # config volume, nothing to keep in sync with stacks/caddy - routing, TLS
+    # and CORS all happen one hop up.
+    image: docker.io/library/caddy:${CADDY_SAVES_VERSION:-2.11-alpine}
+    restart: unless-stopped
+
+    # `--root` is the only thing standing between this and serving the whole
+    # mount. Do not point it at /saves.
+    command: caddy file-server --root /saves/latest --listen :80
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+    volumes:
+      # Both read-only, and mounted as SIBLINGS under /saves because the link
+      # that scripts/satisfactory-latest-save.sh writes is relative:
+      #
+      #   latest/latest.sav -> ../saved/SaveGames/<session>/<file>.sav
+      #
+      # An absolute /srv/... target would dangle inside the container, which is
+      # the failure this layout exists to avoid.
+      #
+      # gamefiles/ (20GB) and backups/ are deliberately not mounted. A web
+      # server has no reason to be able to read either of them.
+      - ${SATISFACTORY_DATA:-/srv/satisfactory}/latest:/saves/latest:ro
+      - ${SATISFACTORY_DATA:-/srv/satisfactory}/saved:/saves/saved:ro
+
+    # No ports. Reached by container name from Caddy on `proxy`, like every
+    # other app in the house. bootstrap.sh check 6 allow-lists `satisfactory`
+    # and not `satisfactory-saves`, which is correct - if this ever starts
+    # publishing something, that check should complain.
+    networks:
+      - proxy
+
+    # A file server streams rather than buffering the save, so this is generous
+    # rather than tight. Its real job is to guarantee that serving a save can
+    # never join an OOM fight with the game container above or with Frigate.
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+    # --spider is a HEAD, so this proves three things - the mount is there, the
+    # relative symlink resolves, and Caddy is listening - without dragging a
+    # several-hundred-megabyte save through the loopback every minute. (wget
+    # here is busybox's, from the alpine image.)
+    #
+    # EXPECT UNHEALTHY until the server has written its first autosave. That is
+    # the check working, not failing, and nothing in this repo restarts on
+    # unhealthy - same as the note on the game container above.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/latest.sav"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+networks:
+  # Shared with Caddy and everything else it routes to. Only `saves` joins it;
+  # the game container above stays on this stack's private default bridge.
+  proxy:
+    external: true

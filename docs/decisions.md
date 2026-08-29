@@ -700,6 +700,57 @@ the backend moves. Filed under
 [Still open](#still-open) rather than done, because nothing is currently
 blocked on it.
 
+## The save viewer is LAN-only, because the map fetches in the browser
+
+Decided 2026-08-29.
+
+The want was small: one URL that shows the current state of the factory on
+Satisfactory-Calculator's Interactive Map, without touching the server's saves.
+
+The map already supports it — `?url=<link to a .sav>` — and the interesting part
+is *where that fetch happens*. It happens in the browser. The evidence is that
+the only thing upstream requires of the far end is an
+`Access-Control-Allow-Origin` header, and CORS is a browser mechanism; a
+server-side fetch would neither need nor notice it. satisfactory-calculator.com
+never connects to forge.
+
+That collapses the problem. Every guide written about this forwards ports and
+issues a certificate for a public name, because the assumption is that a
+stranger's server has to reach yours. It doesn't. The save endpoint went into
+the LAN-only wildcard block with everything else: no A record, no forward, no
+`ufw-docker` rule, and the wildcard certificate this repo already issues over
+DNS-01 satisfies the "valid SSL certificate" requirement on its own.
+
+**The exposure surface of this feature is zero.** That is worth stating plainly,
+because it is the opposite of the other Satisfactory decision in this file.
+
+### The three things that were rejected
+
+**Self-hosting the map.** Not possible, and not a close call. Upstream's licence
+restricts the code to their own domain and the repository says outright that it
+is not intended to be deployed elsewhere.
+
+**Copying the newest save instead of linking it.** A copy is immune to the game
+rewriting a file mid-download. But autosaves rotate across three slots, so the
+newest file is precisely the one that will not be touched for another two
+intervals, and the script ignores anything written in the last fifteen seconds.
+The copy would have bought a risk that has already been designed away, at the
+price of several hundred megabytes rewritten every five minutes forever.
+
+**Serving the file from Caddy directly.** Caddy is a file server; a `file_server`
+handle and one read-only mount would have avoided a container entirely. It was
+rejected to keep two lines from blurring: the Caddyfile is a routing table and
+says so at the top, and Caddy's compose file holds no application's data. A
+sidecar keeps the save mount inside the stack that owns the save. The price is
+one more container to serve one file, which is the honest cost of the
+convention.
+
+### What this depends on that could change
+
+If the map ever moves that fetch server-side, this stops working from the LAN and
+the only fix is public exposure — at which point it becomes a decision to make
+here rather than a mechanism to repair. Nothing else in the house is affected.
+
 ## Still open
 - **A backup for Home Assistant's data directory.** HA Container has no backup
   UI, and `/srv/homeassistant/config/.storage` holds every credential HA has.
@@ -715,6 +766,11 @@ blocked on it.
 - **Backups.** The photo library will exist in exactly one place on one NVMe.
   `rclone` to OneDrive is the intended answer; until it runs, this is the
   largest unmitigated risk in the build.
+- **Letting the friends who play on the server see the factory map.**
+  `spaghetti.<domain>` is LAN-only, which means it works from the couch and
+  nowhere else. Making it public would be a second public hostname and an
+  unauthenticated one — see
+  [the save viewer is LAN-only](#the-save-viewer-is-lan-only-because-the-map-fetches-in-the-browser).
 - **Off-box copies of the Satisfactory saves.** `/srv/satisfactory/backups` is
   on the same NVMe as `/srv/satisfactory/saved`, so it covers a corrupt save and
   nothing else. The same gap Home Assistant and Beszel have, with lower stakes.

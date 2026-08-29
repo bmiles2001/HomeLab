@@ -22,7 +22,9 @@ stacks/
                       only other container on the host network, and the only
                       one holding the docker socket.
   satisfactory/       game server. the only stack besides caddy that publishes
-                      ports, because the game speaks raw udp.
+                      ports, because the game speaks raw udp. a second, ordinary
+                      service in the same stack serves the newest save to the
+                      satisfactory-calculator interactive map.
 scripts/
   deploy.sh           deploy a stack with secrets injected from Infisical
   compose.sh          compose commands that need real secret values (config,
@@ -31,6 +33,8 @@ scripts/
                       subnets. run it before any risky host change
   infisical-backup.sh nightly dump of the secrets database
   immich-onedrive-*   one-way mirror of the photo library to OneDrive
+  satisfactory-latest-save-*
+                      points latest.sav at the newest save, for the map
 docs/
   forge-session-runbook.md   build order: hardening, docker, first stacks
   immich-deploy.md           step-by-step: secrets, deploy, first login, iPhones
@@ -41,7 +45,8 @@ docs/
   home-assistant.md          hacs, the frigate integration, notifications
   beszel.md                  the two-phase first deploy, the docker socket
                              tradeoff, disks and gpu
-  satisfactory.md            claiming the server, the three ports, auto pause
+  satisfactory.md            claiming the server, the three ports, auto pause,
+                             and viewing the save on the interactive map
   secrets.md                 Infisical setup and the daily workflow
   remote-access.md           editing from your main PC
   public-access.md           forwarding 443, DDNS, and what stays private

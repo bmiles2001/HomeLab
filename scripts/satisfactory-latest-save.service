@@ -1,0 +1,29 @@
+[Unit]
+Description=Point the Satisfactory latest-save symlink at the newest save
+Documentation=https://github.com/AnthorNet/SC-InteractiveMap
+# The game server owns this directory. If the stack is down or has never run,
+# there is nothing to link and the unit is skipped rather than failed.
+ConditionPathIsDirectory=/srv/satisfactory/saved/SaveGames
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/satisfactory-latest-save.sh
+
+# Runs as root only to read files owned by 1000:1000 and write one symlink in
+# /srv/satisfactory/latest. It needs no network and touches nothing else.
+User=root
+ProtectSystem=strict
+# The leading `-` tolerates the directory not existing yet, so the unit starts
+# rather than failing on a box where bootstrap.sh has not run. bootstrap.sh
+# creates it; the script only ever writes a symlink inside it.
+ReadWritePaths=-/srv/satisfactory/latest
+PrivateNetwork=true
+NoNewPrivileges=true
+
+# This is a background nicety competing with a game server for the same NVMe.
+# It should always lose.
+Nice=19
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

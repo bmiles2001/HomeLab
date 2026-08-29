@@ -173,6 +173,130 @@ rather than a photo library, so it is a small job. Logged in
 
 ---
 
+## Viewing the save on the Interactive Map
+
+`https://satisfactory-calculator.com/en/interactive-map?url=https://spaghetti.brent-miles.com/latest.sav`
+
+Bookmark that. It opens the Satisfactory-Calculator Interactive Map on whatever
+the server saved most recently, and it keeps working forever because the
+filename never changes — a symlink moves underneath it instead.
+
+### Why this needs no public exposure
+
+The map takes `?url=` and **fetches the save in your browser**, not on their
+servers. The tell is that the only thing upstream asks of the far end is a CORS
+header; CORS exists solely to police fetches a browser makes on a page's behalf.
+satisfactory-calculator.com never connects to forge.
+
+So the whole thing sits inside the LAN-only wildcard block with Frigate and
+Komodo:
+
+- no DNS record — `*.brent-miles.com` already resolves to `10.0.0.4`
+- no port forward, and nothing added to the router or `ufw-docker`
+- no certificate work — the DNS-01 wildcard already covers the name, which is
+  what satisfies upstream's "valid SSL certificate" requirement
+- nothing new reachable from the internet, so this is not a second exception to
+  [public-access.md](public-access.md)
+
+The cost is that it only works from inside the house. Sharing the factory with
+the friends who play on the server would mean a second public hostname, and that
+is logged in [decisions.md](decisions.md#still-open) rather than done.
+
+Note that the map itself is not self-hosted and cannot be: upstream's licence
+restricts the code to their own domain. This feeds their hosted page a file.
+
+### The three pieces
+
+| Piece | Where | Job |
+|---|---|---|
+| `satisfactory-latest-save.{sh,service,timer}` | host systemd | point `latest/latest.sav` at the newest `.sav` |
+| `saves` service | `stacks/satisfactory/compose.yml` | serve that one directory over HTTP on `proxy` |
+| `spaghetti.<domain>` block | `stacks/caddy/Caddyfile` | TLS, the LAN guard, and the CORS headers |
+
+**Nothing writes into `SaveGames/`.** The updater creates one relative symlink
+in `/srv/satisfactory/latest/`, a directory of its own, and both container
+mounts are read-only.
+
+#### Why a timer and not a `.path` unit
+
+A systemd `.path` unit on `PathChanged` fires on close-after-write and would be
+instant, which is strictly nicer — except that a `.path` unit watches exactly one
+directory and does not recurse. It would have to name the session directory the
+server happens to have created, and it would silently stop the day a new one
+appears. A 60-second timer against a server that autosaves every five minutes
+costs nothing and cannot rot that way.
+
+#### Why the newest save is safe to serve mid-write
+
+Autosaves rotate across three slots, so the newest file is the one that will
+*not* be rewritten for another two intervals — about fifteen minutes at the
+default. The script also skips any save less than 15 seconds old, which covers
+the write itself. Between the two there is no realistic window in which the map
+can download a truncated file.
+
+### Install
+
+```bash
+# 1. The directory the symlink lives in. bootstrap.sh creates it; by hand:
+sudo mkdir -p /srv/satisfactory/latest
+sudo chown "$(id -u):$(id -g)" /srv/satisfactory/latest
+
+# 2. The updater.
+sudo install -m 755 scripts/satisfactory-latest-save.sh /usr/local/bin/
+sudo install -m 644 scripts/satisfactory-latest-save.service /etc/systemd/system/
+sudo install -m 644 scripts/satisfactory-latest-save.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now satisfactory-latest-save.timer
+
+# Prove it before moving on.
+sudo systemctl start satisfactory-latest-save.service
+journalctl -u satisfactory-latest-save -n 20 --no-pager
+ls -l /srv/satisfactory/latest/          # latest.sav -> ../saved/SaveGames/...
+
+# 3. The sidecar. Brings up satisfactory-saves alongside the game container;
+#    the game container is not recreated by this.
+./scripts/deploy.sh satisfactory
+
+# 4. Caddy. RECREATE, not reload - the Caddyfile is a single-file bind mount
+#    and a git pull leaves the container on the old inode. See
+#    decisions.md#single-file-bind-mounts-need-a-recreate-not-a-reload.
+./scripts/deploy.sh caddy -- --force-recreate
+```
+
+### Verify
+
+```bash
+# The file is there, and it is the size of a save rather than of an error page.
+curl -sI https://spaghetti.brent-miles.com/latest.sav
+
+# The CORS header the map depends on.
+curl -sI -H 'Origin: https://satisfactory-calculator.com' \
+  https://spaghetti.brent-miles.com/latest.sav | grep -i '^access-control'
+
+# The preflight. Anything other than 204 here means the map will load the save
+# once and then never refresh.
+curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS \
+  https://spaghetti.brent-miles.com/latest.sav
+```
+
+### When it doesn't work
+
+| Symptom | Cause |
+|---|---|
+| Map errors, browser console says CORS | Caddy was reloaded rather than recreated after a `git pull` |
+| Map loads once, never updates | The preflight isn't answering 204, so `If-Modified-Since` never reaches the file server |
+| 404 on `latest.sav` | The timer hasn't run, or `SAVE_ROOT` doesn't match where this server actually writes — check `journalctl -u satisfactory-latest-save` |
+| `satisfactory-saves` is unhealthy | Expected until the first autosave exists. After that, the symlink is dangling — the mounts are siblings under `/saves` and the link must stay relative |
+| Nothing resolves, from a phone on cellular | Working as designed |
+
+Two smaller things worth knowing. A late-game save is several hundred megabytes
+and the map re-downloads it on every refresh, so this is a LAN activity in more
+than one sense. And with **Auto Pause** on, an empty server stops writing
+autosaves — the map stops updating because the factory has stopped, which is
+correct but looks like a bug the first time.
+
+---
+
 ## Updating
 
 Two different things update on two different schedules, and conflating them
@@ -221,6 +345,8 @@ The cheaper fixes first:
 
 - [decisions.md](decisions.md#satisfactory-publishes-ports-and-caddy-cannot-help)
   — why this stack is allowed to publish ports
+- [decisions.md](decisions.md#the-save-viewer-is-lan-only-because-the-map-fetches-in-the-browser)
+  — why the map needs no public exposure at all
 - [public-access.md](public-access.md) — the exposure model everything else
   follows, and which this stack deliberately sits outside
 - [storage-expansion.md](storage-expansion.md#layout) — what `/srv` is and how
