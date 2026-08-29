@@ -31,12 +31,15 @@ name: satisfactory
 #   4. IT DOWNLOADS ~20GB ON FIRST START and takes a while to come up. That is
 #      SteamCMD fetching the game, not a hang. See the runbook.
 #
-# A FIFTH THING was added later and is a second service, not a fourth oddity:
-# `saves` serves the newest save file over plain HTTP so that the
+# A FIFTH THING was added later, and it is two ordinary services rather than a
+# fifth oddity. `saves-updater` keeps latest/latest.sav pointed at the newest
+# save; `saves` serves that one directory over plain HTTP so the
 # Satisfactory-Calculator Interactive Map can load it from spaghetti.<domain>.
-# It publishes nothing, holds two read-only mounts, and is LAN-only like every
-# other hostname in the Caddyfile. Why that is enough - and why the map does not
-# need a public address to read it - is in
+# Neither publishes a port, both are LAN-only like every other hostname in the
+# Caddyfile, and the game container is untouched by either.
+#
+# Why the map does not need a public address to read it, and why the updater
+# lives here rather than as a systemd timer on the host, are both in
 # docs/satisfactory.md#viewing-the-save-on-the-interactive-map.
 #
 # The single most important setting is NOT in this file: turn on Auto Pause in
@@ -202,7 +205,7 @@ services:
 
     volumes:
       # Both read-only, and mounted as SIBLINGS under /saves because the link
-      # that scripts/satisfactory-latest-save.sh writes is relative:
+      # that updater/latest-save.sh writes is relative:
       #
       #   latest/latest.sav -> ../saved/SaveGames/<session>/<file>.sav
       #
@@ -243,6 +246,98 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  # --- the updater ------------------------------------------------------------
+  #
+  # Repoints latest/latest.sav at the newest save, once a minute, forever.
+  #
+  # THE ONLY SERVICE IN THIS FILE THAT CAN WRITE ANYTHING. It writes exactly one
+  # symlink, into a directory that contains nothing else. saved/ is mounted
+  # read-only here as well, so the saves themselves are unreachable for writing
+  # from every container in this stack except the game itself.
+  #
+  # This was a systemd timer on the host first. That worked, and it was the
+  # wrong shape: it needed `sudo install` and `daemon-reload` on every edit, it
+  # sat outside git's deploy path and Komodo's, and it needed root plus
+  # ProtectSystem to do less than this container does unprivileged. Everything
+  # it touches is mounted here already. See
+  # docs/decisions.md#amendment-the-updater-belongs-in-the-stack.
+  saves-updater:
+    container_name: satisfactory-saves-updater
+    hostname: satisfactory-saves-updater
+
+    # Debian rather than the alpine image `saves` uses, and not to be clever:
+    # the script needs `find -printf`, `ln -r` and `mv -T`, and busybox has
+    # none of the three. Rewriting around them would trade a 30MB image for a
+    # script that quietly does the wrong thing on a filename with a space in
+    # it - and this server's saves are called "Flat Earth_autosave_3.sav".
+    image: docker.io/library/debian:${SATISFACTORY_UPDATER_VERSION:-trixie-slim}
+    restart: unless-stopped
+
+    # PID 1 is a shell loop. init: true puts a real init in front of it so
+    # signals and zombies are somebody's job.
+    init: true
+
+    # `bash <path>` rather than executing the script directly. This repo is
+    # authored on Windows, where git runs with core.filemode=false, so a new
+    # script is committed 100644 however it looks locally - the execute bit is
+    # not a thing this workflow can reliably set. The host systemd unit hid
+    # that behind `install -m 755`; there is nothing to hide it here.
+    command: ["bash", "/opt/updater/latest-save.sh", "--loop"]
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+      INTERVAL: "60"
+
+    # No root. The symlink lands in a directory bootstrap.sh already owns as
+    # 1000:1000, and reading a save needs nothing more than the mode bits the
+    # game writes.
+    user: "${PUID:-1000}:${PGID:-1000}"
+
+    # It has no business talking to anything. Not on `proxy`, not on the
+    # stack's default bridge, not on the internet.
+    network_mode: none
+
+    volumes:
+      # The script, mounted as a DIRECTORY rather than as a single file. Docker
+      # binds a single-file mount by inode and git replaces files by rename, so
+      # a file mount here would leave the container running the pre-pull script
+      # while `git log` says otherwise - the exact trap the Caddyfile carries.
+      # A directory mount follows the directory and has no such problem. See
+      # docs/decisions.md#single-file-bind-mounts-need-a-recreate-not-a-reload.
+      - ./updater:/opt/updater:ro
+
+      # Read-only, like the web server's copy. This container reads saves and
+      # writes nothing into them.
+      - ${SATISFACTORY_DATA:-/srv/satisfactory}/saved:/saves/saved:ro
+
+      # The one writable mount in the stack outside the game's own /config.
+      # Mounted at the same relative position as saved/ so that the symlink can
+      # be relative and therefore valid on the host as well - see the comment
+      # in updater/latest-save.sh.
+      - ${SATISFACTORY_DATA:-/srv/satisfactory}/latest:/saves/latest
+
+    # Nothing else needs to be writable, and the heartbeat is the only file the
+    # script creates outside the mount above.
+    read_only: true
+    tmpfs:
+      - /tmp
+
+    # Healthy = a pass completed in the last three intervals. This is the check
+    # that justifies the container existing separately: a watcher backgrounded
+    # inside `saves` could die without the web server noticing, and the only
+    # symptom would be a map that silently stopped updating.
+    healthcheck:
+      test: ["CMD", "bash", "/opt/updater/healthcheck.sh"]
+      interval: 60s
+      timeout: 5s
+      retries: 2
+      start_period: 90s
+
+    deploy:
+      resources:
+        limits:
+          memory: 64M
 
 networks:
   # Shared with Caddy and everything else it routes to. Only `saves` joins it;

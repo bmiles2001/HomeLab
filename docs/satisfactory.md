@@ -207,15 +207,19 @@ restricts the code to their own domain. This feeds their hosted page a file.
 
 ### The three pieces
 
+All three are in git and all three deploy the same way as everything else in
+the house. Nothing is installed on forge by hand.
+
 | Piece | Where | Job |
 |---|---|---|
-| `satisfactory-latest-save.{sh,service,timer}` | host systemd | point `latest/latest.sav` at the newest `.sav` |
+| `saves-updater` service | `stacks/satisfactory/compose.yml` + `updater/` | point `latest/latest.sav` at the newest `.sav`, once a minute |
 | `saves` service | `stacks/satisfactory/compose.yml` | serve that one directory over HTTP on `proxy` |
 | `spaghetti.<domain>` block | `stacks/caddy/Caddyfile` | TLS, the LAN guard, and the CORS headers |
 
-**Nothing writes into the save directory.** The updater creates one relative
-symlink in `/srv/satisfactory/latest/`, a directory of its own, and both
-container mounts are read-only.
+**Nothing writes into the save directory.** `saved/` is mounted read-only into
+both containers. The only thing the updater creates is one relative symlink in
+`/srv/satisfactory/latest/`, a directory that contains nothing else, and it
+does that as `1000:1000` with no network and a read-only root filesystem.
 
 The updater searches recursively from `/srv/satisfactory/saved` and does not
 care which layout this server uses — upstream's docs, this image and this
@@ -224,22 +228,35 @@ directory per session underneath. Rooting the search at `saved/` is the fix for
 the first version of this, which named `saved/SaveGames` and was skipped by its
 own systemd condition on a box where that directory does not exist.
 
-#### Why a timer and not a `.path` unit
+#### Why the symlink is relative
 
-A systemd `.path` unit on `PathChanged` fires on close-after-write and would be
-instant, which is strictly nicer — except that a `.path` unit watches exactly one
-directory and does not recurse. It would have to name the session directory the
-server happens to have created, and it would silently stop the day a new one
-appears. A 60-second timer against a server that autosaves every five minutes
-costs nothing and cannot rot that way.
+`latest.sav -> ../saved/server/<file>.sav` is valid in two namespaces at once.
+`latest/` and `saved/` are siblings under `/srv/satisfactory` on the host and
+siblings under `/saves` in both containers, so the same relative path resolves
+in all three. An absolute `/srv/...` target would be correct on the host and
+dangle inside the containers.
+
+#### Why a loop and not inotify
+
+A watcher would fire on close-after-write and be instant, which is strictly
+nicer. It is not used because it has to be told which directory to watch —
+`inotify` does not recurse — and the directory the server writes to is
+precisely the thing that has already been wrong once here. A 60-second loop
+against a server that autosaves every five minutes costs nothing and cannot rot
+that way.
 
 #### Why the newest save is safe to serve mid-write
 
-Autosaves rotate across three slots, so the newest file is the one that will
-*not* be rewritten for another two intervals — about fifteen minutes at the
-default. The script also skips any save less than 15 seconds old, which covers
-the write itself. Between the two there is no realistic window in which the map
-can download a truncated file.
+Autosaves rotate across `AUTOSAVENUM` slots — five by default — so the newest
+file is the one that will *not* be rewritten for another four intervals, about
+twenty-five minutes at the default. The script also skips any save less than 15
+seconds old, which covers the write itself. Between the two there is no
+realistic window in which the map can download a truncated file.
+
+The updater ignores `ServerSettings.<port>.sav`, which lives among the saves,
+is a `.sav`, and is not a save. It is rewritten whenever a server setting
+changes, so without the exclusion it would periodically become the newest file
+in the directory and hand the map something it cannot parse.
 
 ### Install
 
@@ -248,26 +265,34 @@ can download a truncated file.
 sudo mkdir -p /srv/satisfactory/latest
 sudo chown "$(id -u):$(id -g)" /srv/satisfactory/latest
 
-# 2. The updater.
-sudo install -m 755 scripts/satisfactory-latest-save.sh /usr/local/bin/
-sudo install -m 644 scripts/satisfactory-latest-save.service /etc/systemd/system/
-sudo install -m 644 scripts/satisfactory-latest-save.timer   /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now satisfactory-latest-save.timer
-
-# Prove it before moving on.
-sudo systemctl start satisfactory-latest-save.service
-journalctl -u satisfactory-latest-save -n 20 --no-pager
-ls -l /srv/satisfactory/latest/          # latest.sav -> ../saved/SaveGames/...
-
-# 3. The sidecar. Brings up satisfactory-saves alongside the game container;
-#    the game container is not recreated by this.
+# 2. Both containers. The game container is not recreated by this.
 ./scripts/deploy.sh satisfactory
 
-# 4. Caddy. RECREATE, not reload - the Caddyfile is a single-file bind mount
+# 3. Caddy. RECREATE, not reload - the Caddyfile is a single-file bind mount
 #    and a git pull leaves the container on the old inode. See
 #    decisions.md#single-file-bind-mounts-need-a-recreate-not-a-reload.
 ./scripts/deploy.sh caddy -- --force-recreate
+```
+
+That is the whole install, and it is also the whole update path: `git pull`
+then `./scripts/deploy.sh satisfactory`. Editing the updater script needs no
+`sudo` and nothing reloaded — `updater/` is mounted as a directory, so a pull
+replaces the file the container is reading.
+
+#### If you deployed the systemd version first
+
+It existed for about an hour on 2026-08-29. Remove it, or it keeps running
+alongside the container and the two fight over the same symlink:
+
+```bash
+sudo systemctl disable --now satisfactory-latest-save.timer
+sudo rm -f /etc/systemd/system/satisfactory-latest-save.{service,timer}
+sudo rm -f /usr/local/bin/satisfactory-latest-save.sh
+sudo systemctl daemon-reload
+
+# The symlink it left behind is root-owned. Harmless - the container can
+# replace it, because the directory is 1000:1000 - but tidy it anyway.
+sudo rm -f /srv/satisfactory/latest/latest.sav
 ```
 
 ### Verify
@@ -292,8 +317,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS \
 |---|---|
 | Map errors, browser console says CORS | Caddy was reloaded rather than recreated after a `git pull` |
 | Map loads once, never updates | The preflight isn't answering 204, so `If-Modified-Since` never reaches the file server |
-| 404 on `latest.sav`, and the journal shows lines that read `<unit> - <description>` with no `Starting` prefix | Those are skip messages, not start messages: `ConditionPathIsDirectory` names a directory that does not exist, so the script never ran. `systemctl status satisfactory-latest-save` prints the condition it failed |
-| 404 on `latest.sav`, journal otherwise quiet | No `.sav` under `SAVE_ROOT` yet. `find /srv/satisfactory/saved -name '*.sav'` — if that finds files, the root is wrong |
+| 404 on `latest.sav` | `docker logs satisfactory-saves-updater`. "no .sav files under /saves/saved yet" means the server hasn't autosaved; anything else names itself. Cross-check with `find /srv/satisfactory/saved -name '*.sav'` |
+| `satisfactory-saves-updater` is unhealthy | The loop has stalled or died — the heartbeat is older than three intervals. The logs are the next stop; the map is serving a stale save until it comes back |
+| The map updates, then stops, and the logs look fine | Check nothing reinstalled the old systemd timer. Two things writing the same symlink is the one way these can disagree |
 | `satisfactory-saves` is unhealthy | Expected until the first autosave exists. After that, the symlink is dangling — the mounts are siblings under `/saves` and the link must stay relative |
 | Nothing resolves, from a phone on cellular | Working as designed |
 

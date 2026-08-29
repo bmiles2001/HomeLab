@@ -731,9 +731,10 @@ restricts the code to their own domain and the repository says outright that it
 is not intended to be deployed elsewhere.
 
 **Copying the newest save instead of linking it.** A copy is immune to the game
-rewriting a file mid-download. But autosaves rotate across three slots, so the
-newest file is precisely the one that will not be touched for another two
-intervals, and the script ignores anything written in the last fifteen seconds.
+rewriting a file mid-download. But autosaves rotate across five slots by
+default, so the newest file is precisely the one that will not be touched for
+another four intervals, and the script ignores anything written in the last
+fifteen seconds.
 The copy would have bought a risk that has already been designed away, at the
 price of several hundred megabytes rewritten every five minutes forever.
 
@@ -744,6 +745,50 @@ says so at the top, and Caddy's compose file holds no application's data. A
 sidecar keeps the save mount inside the stack that owns the save. The price is
 one more container to serve one file, which is the honest cost of the
 convention.
+
+### Amendment: the updater belongs in the stack
+
+Reversed the same day it was built, 2026-08-29.
+
+The thing that keeps `latest.sav` pointed at the newest save was first a
+`systemd` timer on forge — a script in `/usr/local/bin`, a `.service` and a
+`.timer` in `/etc/systemd/system`. It worked. It was the wrong shape, and the
+reasoning behind it was borrowed rather than thought through: the nearest
+precedent in this repo is `immich-onedrive-sync`, which genuinely has to be on
+the host because rclone's OneDrive token lives in a home directory and the
+script drives the `docker` CLI. Neither is true here. This one needs two
+directories the stack already mounts and nothing else.
+
+What that cost, before it was moved:
+
+- a third category of state, outside git's deploy path and outside Komodo's
+- `sudo install` and `daemon-reload` on every edit, which was paid twice inside
+  the first hour
+- `root` plus `ProtectSystem=strict` and `ReadWritePaths` to do less than the
+  container now does as `1000:1000` with no network at all
+- and a silent failure mode of its own. `ConditionPathIsDirectory` named a
+  directory that does not exist on this box, so the unit was skipped on every
+  tick, and systemd's skip message reads `<unit> - <description> was skipped
+  because of an unmet condition check` — which at a glance is indistinguishable
+  from `Starting <unit> - <description>...`. The only other symptom was a 404.
+
+Now it is `saves-updater` in `stacks/satisfactory/compose.yml`, and
+`./scripts/deploy.sh satisfactory` is the entire install and the entire update
+path.
+
+**What it cost to move.** A third container, and a `debian-slim` base rather
+than reusing the alpine image `saves` already pulls — the script needs
+`find -printf`, `ln -r` and `mv -T`, and busybox has none of the three.
+Rewriting around them would have traded 30MB for a script that mishandles a
+filename with a space in it, and this server's saves are called
+`Flat Earth_autosave_3.sav`.
+
+**Why a separate container and not a background loop inside `saves`.** Because
+a loop that dies inside a healthy web server is invisible: the server keeps
+serving, the healthcheck keeps passing, and the only symptom is a map that
+quietly stops updating. As its own container it has its own heartbeat
+healthcheck, and a container that has gone is something Beszel already tells
+you about.
 
 ### What this depends on that could change
 
