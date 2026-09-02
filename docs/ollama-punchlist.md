@@ -46,16 +46,20 @@ nvidia-smi --query-gpu=memory.total,memory.used,memory.free --format=csv
 nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
 ```
 
-- [ ] Total, used and free recorded with the box **idle**.
-- [ ] Per-process figures recorded — you should see Frigate, and Immich only if
-      it happens to be working.
-- [ ] Repeat the second command once **during** an Immich import if you can
-      trigger one. That is the number that decides whether a 7.6GB model is ever
-      viable here.
+- [x] Total, used and free recorded with the box **idle** — 10240 / 1004 /
+      **8874 MiB**, measured 2026-09-01.
+- [x] Per-process figures recorded — `frigate.detector:onnx` 260 MiB, plus three
+      `ffmpeg` NVDEC processes at 239 MiB each. Under a gigabyte for detection
+      and hardware decode of all three cameras.
+- [ ] Repeat the second command once **during** an Immich import. This is the
+      one number still missing, and it is the one that decides whether a 7.6GB
+      model is safe here or merely lucky on a quiet box.
 
-**Free minus about 1GB of slack is your model budget.** If it is under 5GB with
-the box idle, stop and re-read the budget section before pulling anything —
-something is holding more than expected.
+**Free minus about 1GB of slack is your model budget — so ~7.8 GB idle.** That
+is roughly a gigabyte more than the original estimate, and it is why
+[ollama.md](ollama.md#the-vram-budget) now says a 7.6GB model fits idle rather
+than "tight". It says nothing yet about mid-import, which is what the unticked
+box above is for.
 
 ---
 

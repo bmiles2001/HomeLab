@@ -46,25 +46,41 @@ Both of those share *compute*, and CUDA time-slices compute — which is what
 one card. A language model is a different shape of tenant: it wants **memory**
 allocated up front, and memory does not time-slice.
 
-Measure the real numbers rather than trusting these; `nvidia-smi` on the host, or
-Beszel's GPU chart, will tell you what Frigate and Immich actually hold. As a
-starting estimate:
+**Measured on forge, 2026-09-01, box idle, before this stack existed:**
 
 | | VRAM |
 |---|---|
-| Card | 10240 MB |
-| Frigate detector, always | ~1–2 GB |
-| Immich ML, during imports | ~1–2 GB |
-| **Left for a model** | **~6–7 GB idle, ~4–5 GB mid-import** |
+| Card | 10240 MiB |
+| `frigate.detector:onnx` | 260 MiB |
+| `ffmpeg` × 3 — NVDEC decode, one per camera | 717 MiB |
+| Driver reserve (`total − used − free`) | ~360 MiB |
+| **Free** | **8874 MiB** |
+| Immich ML, during an import | not yet measured |
 
-Which sets the ceiling on what you can run:
+Frigate is cheaper than expected — under a gigabyte for detection *and* hardware
+decode of three camera streams. Two things about that number are worth carrying
+forward:
+
+- **It scales with camera count.** Each stream costs ~239 MiB of NVDEC. A fourth
+  camera takes another quarter of a gigabyte off the model budget, and turning
+  recording on would add more.
+- **Immich is the missing measurement**, and it is the one that decides the top
+  of the range. It unloads when idle, so it does not appear in a baseline taken
+  on a quiet box. Re-run the per-process query during a large import and write
+  the number in here.
+
+Leaving ~1GB of slack against that 8874, the working budget is **~7.8 GB idle**,
+and unknown-but-smaller during an Immich import.
 
 | Model size at Q4_K_M | Verdict |
 |---|---|
-| under ~5 GB | fits in the bad case as well as the good one |
-| ~6–7 GB | fits while Immich is idle; may spill during a large import |
-| ~7.6 GB | import-dependent, and tight even when idle |
+| under ~5 GB | fits in every case, imports included |
+| ~6.6 GB | comfortable idle; should survive an import |
+| ~7.6 GB | fits idle with room to spare; **may** spill during an import |
 | above ~8 GB | will not fit — do not bother |
+
+Add the KV cache to the model's own size before checking it against that budget.
+At `q8_0` and 8192 tokens it is a few hundred megabytes; at 32k it is not.
 
 **The failure mode is gentle and silent.** Ollama does not evict Frigate and does
 not crash. It offloads layers to the CPU and gets very slow. So on this box,
@@ -101,7 +117,7 @@ picks **4k tokens**. That is fine for chat and too small to hand a model a
 document — so this stack sets `OLLAMA_CONTEXT_LENGTH=8192`.
 
 The catch is that the KV cache grows with the context window and comes out of the
-same 6–7GB the weights are competing for. **A model that fits perfectly at 4k can
+same ~7.8GB the weights are competing for. **A model that fits perfectly at 4k can
 spill to CPU at 32k**, with no error printed anywhere. If you raise it for a
 document-heavy task, raise it in steps and check `ollama ps` after each one.
 
@@ -200,7 +216,7 @@ Reasonable starting points, all Q4_K_M:
 |---|---|---|
 | `qwen3.5:9b` | 6.6 GB | general drafting and questions |
 | `qwen2.5-coder:7b` | 4.7 GB | code, and comfortable headroom |
-| `gemma4:12b` | 7.6 GB | stronger general use, import-dependent fit |
+| `gemma4:12b` | 7.6 GB | stronger general use; fits idle, unproven mid-import |
 | `nomic-embed-text` | 274 MB | embeddings — required for document search |
 
 The embedding model is the exception to the one-at-a-time rule: RAG hits it
@@ -304,8 +320,10 @@ the reasons to do it are privacy and offline, not quality.
   resident model for latency, which means giving up `OLLAMA_KEEP_ALIVE=5m` and
   subtracting a model's full size from Frigate's headroom permanently. Not free,
   and not decided.
-- **Whether `gemma4:12b` actually fits.** 7.6GB against a 6–7GB idle budget is
-  the boundary case. One import during one conversation answers it.
+- **What Immich actually holds during an import.** The one gap in the baseline,
+  and the number that decides whether a 7.6GB model is safe or merely lucky. Run
+  `nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv`
+  during a large import and record it in the budget table above.
 - **The idle iGPU.** The UHD 770 does nothing since Frigate moved to the 3080.
   It cannot run these models usefully, but it remains the natural home for
   Immich's video transcoding — which would take Immich off the 3080 during the

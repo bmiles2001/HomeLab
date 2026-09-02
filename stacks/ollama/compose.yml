@@ -101,7 +101,7 @@ services:
       # Ollama sizes the default by available VRAM: under 23GB it picks 4k. That
       # is fine for chat and far too small to hand a model a document, so it
       # gets raised here - but the KV cache grows with it and comes out of the
-      # same 6-7GB the model weights are competing for. A model that fits
+      # same ~7.8GB the model weights are competing for. A model that fits
       # perfectly at 4k can spill to CPU at 32k with no error anywhere.
       #
       # 8192 is a deliberate middle: enough for real document questions, small
