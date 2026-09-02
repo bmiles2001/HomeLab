@@ -85,6 +85,20 @@ required_vars() {
     # name added here is enforced on the Komodo deploy path too.
     komodo)        echo "KOMODO_DATABASE_USERNAME KOMODO_DATABASE_PASSWORD KOMODO_JWT_SECRET KOMODO_WEBHOOK_SECRET KOMODO_INIT_ADMIN_USERNAME KOMODO_INIT_ADMIN_PASSWORD DOMAIN" ;;
     mosquitto)     echo "MQTT_USER MQTT_PASSWORD" ;;
+    # Ollama itself has no entry to make - it ships no authentication and so
+    # has nothing to configure. Both names here belong to Open WebUI.
+    #
+    # WEBUI_SECRET_KEY signs sessions and encrypts the credentials Open WebUI
+    # stores. A blank one does not fail to start and does not sign everyone out
+    # on restart either: Open WebUI generates a key and writes it to
+    # .webui_secret_key inside its data directory. That is exactly why it is
+    # listed. A generated key on disk is a credential this repo does not know
+    # about and Infisical cannot restore - resetting the data volume silently
+    # rotates it, and nothing anywhere records what it was.
+    #
+    # DOMAIN is duplicated from /caddy to build WEBUI_URL, the same way /beszel
+    # and /homelable duplicate it - deploy.sh reads one path per stack.
+    ollama)        echo "WEBUI_SECRET_KEY DOMAIN" ;;
     # No secrets. The server's admin and claim passwords are set through the
     # in-game Server Manager and stored in the game's own config under
     # /srv/satisfactory/saved - there is nothing for compose to interpolate.

@@ -344,6 +344,67 @@ photos.{env.DOMAIN} {
 		}
 	}
 
+	# --- ai.<domain> - Open WebUI -------------------------------------------
+	# The chat UI. Accounts, history, uploaded documents, and the model picker.
+	#
+	# It has its own login and its own user roles, which makes it the only app
+	# in this block with real authentication of its own - but it stays in the
+	# LAN-only block anyway. What is behind that login is every conversation
+	# anyone in the house has had with it and every document they uploaded to
+	# search, which is a more personal archive than anything else on this box
+	# except the photo library.
+	#
+	# Signup is left enabled in the compose file so the first account can be
+	# created at all; new accounts land in a pending queue until an admin
+	# approves them. That queue is doing real work only because this guard is
+	# here - it bounds the damage to somebody already on the LAN.
+	@openwebui host ai.{env.DOMAIN}
+	handle @openwebui {
+		reverse_proxy open-webui:8080 {
+			# Generated tokens arrive one at a time over a long-lived streaming
+			# response. Without this the page sits blank and then prints a whole
+			# answer at once - the same buffering symptom as the blocks above,
+			# except here it looks like the model is slow rather than like the
+			# page is broken.
+			flush_interval -1
+		}
+	}
+
+	# --- llm.<domain> - the Ollama API, WITH NO AUTHENTICATION --------------
+	# Read that heading again before adding anything to this block.
+	#
+	# Ollama ships no authentication and has no setting to add any. Everything
+	# the API can do, it will do for whoever asks: generate, but also pull a
+	# model, and DELETE one. This guard is not a defence-in-depth layer here, it
+	# is the entire access control, which puts this hostname in the same class
+	# as Frigate's port 5000 - the difference being that here there is no
+	# authenticated port to point at instead.
+	#
+	# It exists because the API is the useful half for everything that is not a
+	# browser: an editor plugin, a script, a desktop client. Home Assistant is
+	# NOT one of those - it is a container, and the @notlocal guard above
+	# excludes Docker's own range on purpose, so HA reaches ollama:11434 over
+	# the proxy network and never through this name.
+	#
+	# What is actually at risk is bounded and worth saying plainly: the models
+	# are re-downloadable files, and conversations sent straight to the API are
+	# not stored. The realistic worst case from the LAN is somebody deleting
+	# weights you can pull again, or keeping the GPU busy - which Frigate would
+	# notice before you did.
+	#
+	# If this ever needs to be more than that, the answer is a basicauth
+	# directive here rather than anything upstream, and it will break every
+	# client that does not let you set a header.
+	@ollama host llm.{env.DOMAIN}
+	handle @ollama {
+		reverse_proxy ollama:11434 {
+			# Same reason as ai.<domain> above: generation is a token stream.
+			# A client that waits for the whole response still works without
+			# this; a client that streams shows nothing until the end.
+			flush_interval -1
+		}
+	}
+
 	# --- template: copy this block for each new app ------------------------
 	# @myapp host myapp.{env.DOMAIN}
 	# handle @myapp {

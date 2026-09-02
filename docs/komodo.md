@@ -3,7 +3,8 @@
 Container UI and deploy orchestrator for `forge`. Adopted on the condition that
 it owns nothing — not secrets, not stack configuration, not the compose files.
 
-`docs/decisions.md#komodo--rejected` rejected it on 2026-08-03 because "Komodo
+`docs/decisions.md#komodo--reversed-now-adopted` records the 2026-08-03
+rejection, which was because "Komodo
 wants to own environment variables and secrets, and that collides directly with
 `scripts/deploy.sh` injecting them from Infisical." That objection is answered
 here rather than waved away: Komodo is wired up as a *consumer* of Infisical,

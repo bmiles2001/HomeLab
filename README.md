@@ -26,6 +26,18 @@ stacks/
                       services in the same stack point latest.sav at the newest
                       save and serve it to the satisfactory-calculator
                       interactive map.
+  homelable/          visual map of the house network. the backend does the
+                      scanning and is not on the proxy network; the frontend's
+                      nginx proxies /api to it by a hardcoded name.
+  komodo/             container ui and deploy orchestrator. owns nothing -
+                      compose files stay on disk, secrets stay in Infisical.
+                      mongo is replaced by ferretdb on postgres, because
+                      kernel 6.19 blocks mongo outright.
+  ollama/             local language models and a chat ui. third tenant on the
+                      3080, and the only stack whose data directory is
+                      deliberately not backed up.
+komodo/               stack definitions as toml, synced into komodo in managed
+                      mode. its database is a cache of these files.
 scripts/
   deploy.sh           deploy a stack with secrets injected from Infisical
   compose.sh          compose commands that need real secret values (config,
@@ -33,10 +45,13 @@ scripts/
   host-snapshot.sh    before/after/diff of ports, containers, iptables and
                       subnets. run it before any risky host change
   infisical-backup.sh nightly dump of the secrets database
+  komodo-env.sh       renders a stack's secrets into a tmpfs .env for komodo,
+                      which cannot call infisical itself
   immich-onedrive-*   one-way mirror of the photo library to OneDrive
 docs/
   forge-session-runbook.md   build order: hardening, docker, first stacks
   immich-deploy.md           step-by-step: secrets, deploy, first login, iPhones
+  immich-punchlist.md        what's left to call immich done. delete when ticked
   onedrive-mirror.md         rclone setup, the headless auth dance, restoring
   photo-app-comparison.md    why Immich and not the others
   frigate.md                 detector model, the recording decision, first run
@@ -51,6 +66,12 @@ docs/
   public-access.md           forwarding 443, DDNS, and what stays private
   cockpit.md                 host management UI, routed through caddy
   storage-expansion.md       LVM layout on the 2TB nvme, and what's left free
+  homelable.md               why the container over the HACS integration, and
+                             what the bridged scanner cannot see
+  komodo.md                  what komodo owns (nothing), the tmpfs .env, and
+                             the periphery key exchange
+  ollama.md                  the vram budget, adding models, what not to back up
+  ollama-punchlist.md        ordered deploy steps. delete when ticked off
   decisions.md               why this is shaped the way it is
 home-server-build-plan.md    hardware, BIOS, storage, GPU, everything non-container
 ```
@@ -328,6 +349,8 @@ An NVR is the worst-case-if-breached service in the house.
 | Photos                      | `/srv/immich/data`          | OneDrive mirror             |
 | Caddy certs + ACME account  | `caddy_data` volume         | nothing - reissued on demand |
 | **rclone OneDrive token**   | `/root/.config/rclone/`     | **nothing** - re-auth on demand |
+| Open WebUI data             | `/srv/openwebui`            | **nothing yet** - accounts, chats, uploaded docs |
+| Ollama models               | `/srv/ollama`               | **deliberately nothing** - re-downloadable |
 | Everything else             | this repo                   | GitHub                      |
 
 Two things that table doesn't say out loud. The Infisical row and the rclone row
@@ -393,5 +416,9 @@ Watch it with `du -sh /srv/immich/data/*` occasionally.
 - **A backup for Home Assistant.** Its data directory holds every credential HA
   has and nothing covers it. The sharpest edge of choosing HA Container.
 
-Komodo is no longer on this list — it is **rejected**, not deferred. See
-[docs/decisions.md](docs/decisions.md#komodo--rejected).
+Komodo was on this list as **rejected**, on the grounds that it wants to own
+environment variables and secrets. That was reversed: it is deployed at
+`deploy.brent-miles.com`, wired up as a *consumer* of Infisical rather than an
+owner of anything. See
+[docs/decisions.md](docs/decisions.md#komodo--reversed-now-adopted) and
+[docs/komodo.md](docs/komodo.md).

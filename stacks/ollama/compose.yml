@@ -1,0 +1,305 @@
+name: ollama
+
+# Local language models on forge, with a browser UI in front of them.
+#
+# Deploy:  ./scripts/deploy.sh ollama
+#
+# Reached at ai.<domain> - the UI - and llm.<domain> - the raw API. Both are in
+# the LAN-only block. The API one has NO AUTHENTICATION OF ANY KIND and the
+# Caddy guard is the only thing in front of it; see the note on that block in
+# stacks/caddy/Caddyfile before deciding anything else about it.
+#
+# Required secrets are validated by deploy.sh, not by ${VAR:?} guards in this
+# file, so plain `docker compose down/logs/ps` works in this directory.
+#
+# THIS STACK IS THE THIRD TENANT ON THE 3080, and that is the only genuinely
+# hard part of it. Frigate holds a detector resident on the card 24/7 and Immich
+# takes a slice during imports - but both of those share COMPUTE, and CUDA
+# time-slices compute. A language model does not want a slice of compute. It
+# wants several gigabytes of VRAM allocated up front, the moment somebody types,
+# and memory does not time-slice. Everything in the ollama service's environment
+# block below exists to keep that demand bounded and predictable.
+#
+# The failure mode when it is not bounded is worth knowing, because it is gentle
+# and it is silent: Ollama does not evict Frigate and does not crash. It offloads
+# layers to the CPU and gets very slow. So "the chat got slow" is the symptom of
+# a VRAM problem here, and `docker exec ollama ollama ps` is what confirms it -
+# a model showing any CPU percentage has exceeded the budget.
+#
+# See docs/ollama.md#the-vram-budget and
+# docs/decisions.md#ollama-is-the-third-tenant-on-the-3080.
+#
+# Two containers:
+#
+#   ollama      the model runner and the API. On `proxy` rather than a private
+#               network, because two things besides the UI need to reach it:
+#               Caddy, for llm.<domain>, and eventually Home Assistant, which is
+#               a container and therefore cannot use that hostname at all - see
+#               the note on networks at the bottom of this file.
+#   open-webui  chat UI, accounts, and document search. Talks to ollama by
+#               container name.
+#
+# MODELS ARE NOT IN THIS REPO, deliberately. They are pulled at runtime into
+# /srv/ollama and are content in a data volume, the same category as the photo
+# library and Frigate's clips - not configuration. What this file reproduces is
+# the environment; which models happen to be sitting in it is not a thing git
+# needs to know. The one consequence that does matter is a
+# backup rule, and it is in docs/ollama.md#what-to-back-up-and-what-not-to.
+
+services:
+  ollama:
+    container_name: ollama
+
+    # 0.33.2 was current when this stack was written. 0.33.0 is the floor if you
+    # ever pin lower: it is the release that added the local Anthropic-API proxy
+    # behind the Claude Desktop integration, which is the one upstream feature
+    # this box might want later.
+    image: docker.io/ollama/ollama:${OLLAMA_VERSION:-0.33.2}
+    restart: unless-stopped
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+      # Bind on all interfaces INSIDE the container. This is the container's own
+      # namespace, not the host - nothing is published, so this reaches exactly
+      # as far as the `proxy` network. The image already defaults to this; it is
+      # written out because the upstream default for the binary is
+      # 127.0.0.1:11434, and a reader who knows that would otherwise wonder how
+      # Caddy is reaching it.
+      OLLAMA_HOST: 0.0.0.0:11434
+
+      # --- the VRAM budget, in four variables ------------------------------
+      #
+      # Ollama's default is 3 loaded models PER GPU. On a card that Frigate is
+      # already living on, that default is the whole problem: three models
+      # resident is 15GB of intent against 10GB of card, and the third one
+      # silently lands on the CPU. One at a time.
+      #
+      # This caps what STAYS loaded. It does not cap a single request - Open
+      # WebUI's side-by-side model comparison sends one prompt to two or three
+      # models at once and will load all of them, which is why that feature is
+      # the most reliable way to blow this budget. Compare in pairs.
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
+
+      # One request at a time per model. This is already upstream's default, and
+      # it is pinned rather than assumed because raising it multiplies the KV
+      # cache by the number of parallel slots - the setting most likely to be
+      # "optimised" later by someone who reads it as a throughput knob.
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+
+      # How long a model holds VRAM after the last message. Upstream's default,
+      # written out because it is the setting that makes this stack acceptable
+      # on a shared card at all: five minutes after a conversation ends, the
+      # memory goes back and Frigate has the card to itself again. The cost is a
+      # few seconds of cold start on the first message. Do not set this to -1
+      # unless something latency-sensitive is depending on it, and if you do,
+      # subtract that model's full size from Frigate's headroom permanently.
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+
+      # Context window, in tokens, and this one is a trap on this box.
+      #
+      # Ollama sizes the default by available VRAM: under 23GB it picks 4k. That
+      # is fine for chat and far too small to hand a model a document, so it
+      # gets raised here - but the KV cache grows with it and comes out of the
+      # same 6-7GB the model weights are competing for. A model that fits
+      # perfectly at 4k can spill to CPU at 32k with no error anywhere.
+      #
+      # 8192 is a deliberate middle: enough for real document questions, small
+      # enough that a ~6GB model still fits alongside Frigate. Raise it in steps
+      # and check `ollama ps` after each one.
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
+
+      # Quantise the KV cache to 8-bit. Roughly halves the memory the context
+      # window costs, for a quality difference that is not measurable in normal
+      # use - which on a 10GB card is the cheapest headroom available anywhere
+      # in this file.
+      #
+      # Two caveats. It is GLOBAL: there is no per-model override. And on a
+      # model architecture that does not support it, Ollama falls back to f16
+      # WITHOUT SAYING SO - so if a model's memory use looks like double what
+      # you budgeted, this quietly not applying is the first thing to check.
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
+
+      # OLLAMA_FLASH_ATTENTION is deliberately not set. It is a three-state
+      # variable - unset means "enable where supported", which is what we want.
+      # Forcing it to 1 gains nothing and forcing it to 0 quietly costs memory.
+
+    volumes:
+      # Model weights and Ollama's own small state. Bind mount to /srv so it
+      # lands on the 984G volume rather than in /var/lib/docker/volumes - a
+      # handful of models is tens of gigabytes and root only has ~292G free.
+      #
+      # THIS IS THE ONE DIRECTORY UNDER /srv THAT SHOULD NOT BE BACKED UP.
+      # Everything in it is a re-downloadable artifact with a name; a rebuilt
+      # forge re-pulls it in minutes. Backing it up is tens of gigabytes of
+      # bandwidth and storage protecting nothing that is not on the internet.
+      - ${OLLAMA_DATA:-/srv/ollama}:/root/.ollama
+
+    networks:
+      - proxy    # reached by caddy at ollama:11434, and by open-webui by name
+
+    # No published ports. 11434 is an unauthenticated API that can pull, run and
+    # DELETE models, so publishing it would put that on every interface of the
+    # box. The only guard it has is Caddy's @notlocal block.
+
+    healthcheck:
+      # The ollama binary is the client as well as the server, so it is
+      # guaranteed present in this image - unlike curl, which is not.
+      #
+      # OLLAMA_HOST is overridden for the check because the service-level value
+      # above is 0.0.0.0, which is an address to bind to and not an address to
+      # connect to. 127.0.0.1 rather than localhost, for the reason written out
+      # in stacks/homelable/compose.yml: Docker puts `::1 localhost` in
+      # /etc/hosts and this server is listening on IPv4.
+      test: ["CMD-SHELL", "OLLAMA_HOST=http://127.0.0.1:11434 ollama ps >/dev/null 2>&1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # The RTX 3080. The full `gpu` capability - which resolves to compute plus
+    # utility - because this container computes on the card, the same as Frigate
+    # and Immich. Beszel's agent asks for `utility` alone because it only reads
+    # sensors.
+    #
+    # Unlike Frigate, NVIDIA_DRIVER_CAPABILITIES is NOT set to `all` here.
+    # Frigate needs that for NVDEC, to decode camera streams on the card;
+    # inference needs no video pipeline and asking for one grants access to
+    # driver libraries this container has no use for.
+    #
+    # `count: all` rather than 1, matching every other GPU service in this repo,
+    # so a second card is picked up without an edit.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - gpu
+
+  open-webui:
+    container_name: open-webui
+
+    # The plain image, not the `-cuda` variant. That variant exists to run a
+    # bundled sentence-transformers embedding model on the GPU inside THIS
+    # container - a second, separate CUDA runtime holding its own VRAM next to
+    # Ollama's, on a card that already has two other tenants. Embeddings are
+    # pushed to Ollama instead, three lines down, which uses the model runner
+    # that is already loaded.
+    image: ghcr.io/open-webui/open-webui:${OPENWEBUI_VERSION:-0.10.2}
+    restart: unless-stopped
+
+    depends_on:
+      ollama:
+        # Not cosmetic. Open WebUI enumerates the model list from OLLAMA_BASE_URL
+        # at startup; if it comes up first it caches an empty list and presents a
+        # UI with no models in the picker, which reads like a broken install
+        # rather than a race.
+        condition: service_healthy
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+      # Container name over the shared network. Not llm.<domain> - that hostname
+      # is inside Caddy's LAN-only block, and that guard deliberately excludes
+      # Docker's own 172.16.0.0/12 range, so a container asking for it gets the
+      # connection aborted. A request from a container is not a request from the
+      # LAN, and that rule has no exception for our own containers.
+      OLLAMA_BASE_URL: http://ollama:11434
+
+      # Signs session cookies and encrypts stored credentials. Rotating it logs
+      # everyone out and nothing worse.
+      #
+      # `:-` empty default for the same reason beszel's KEY and TOKEN have one:
+      # deploy.sh runs a plain `docker compose ps` after the deploy, outside
+      # `infisical run`, and a bare ${VAR} prints a "variable is not set" warning
+      # under a deploy that in fact succeeded. The real check is required_vars().
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:-}
+
+      # Used for links in notifications and for building absolute URLs, not for
+      # serving. DOMAIN is duplicated into Infisical under /ollama for the same
+      # reason it is under /beszel and /homelable: deploy.sh reads one path per
+      # stack.
+      WEBUI_URL: https://ai.${DOMAIN:-}
+
+      # SIGNUP STAYS ON, AND THAT IS DELIBERATE. Setting ENABLE_SIGNUP=false
+      # before an account exists locks you out of a UI that has no other way in -
+      # the same shape of mistake as homelable's password hash, which also has
+      # no recovery path. The first account created becomes the admin.
+      #
+      # DEFAULT_USER_ROLE=pending is what makes leaving it on safe: everyone
+      # after the first lands in a queue and can do nothing until the admin
+      # approves them. So the house can sign up on their own and a stranger on
+      # the LAN gets an account that cannot talk to a model.
+      #
+      # Turn signup off from inside the UI once the family has accounts, not
+      # from here.
+      ENABLE_SIGNUP: ${ENABLE_SIGNUP:-true}
+      DEFAULT_USER_ROLE: ${DEFAULT_USER_ROLE:-pending}
+
+      # No OpenAI. This box exists to not send conversations anywhere, and an
+      # enabled-but-unconfigured OpenAI backend is also a startup delay while it
+      # tries to reach api.openai.com and waits for the timeout.
+      ENABLE_OPENAI_API: ${ENABLE_OPENAI_API:-false}
+
+      # --- document search -------------------------------------------------
+      #
+      # Point embeddings at Ollama rather than at Open WebUI's bundled default.
+      # Out of the box it downloads a sentence-transformers model and runs it on
+      # the CPU inside this container, which is slow on a large document set and
+      # duplicates a model runner that is already sitting on a GPU next door.
+      #
+      # nomic-embed-text has to be pulled before this works - it is 274MB and it
+      # is the one model this stack genuinely requires. Until it exists, uploads
+      # fail at the embedding step with an error that names the model.
+      #   docker exec ollama ollama pull nomic-embed-text
+      RAG_EMBEDDING_ENGINE: ${RAG_EMBEDDING_ENGINE:-ollama}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-nomic-embed-text}
+
+    volumes:
+      # Accounts, chat history, uploaded documents and the vector index built
+      # from them. Unlike /srv/ollama above, THIS one is worth backing up -
+      # nothing in it can be re-downloaded.
+      - ${OPENWEBUI_DATA:-/srv/openwebui}:/app/backend/data
+
+    networks:
+      - proxy    # reached by caddy at open-webui:8080
+
+    # No published ports. Caddy is the only way in, and its @notlocal guard is
+    # what keeps this off the internet once 443 is forwarded.
+
+    healthcheck:
+      # python3 rather than curl or wget. This is a Python application, so the
+      # interpreter is certainly in the image; curl's presence is an upstream
+      # packaging detail that has changed before and would present as a
+      # permanently-unhealthy container that is serving perfectly well.
+      #
+      # urlopen raises on any non-2xx, so a bare call is the whole test.
+      #
+      # 127.0.0.1, not localhost - see stacks/homelable/compose.yml.
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8080/health\")'"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      # Deliberately long. First start builds the database and initialises the
+      # RAG components, which on a cold volume takes well over a minute.
+      start_period: 180s
+
+networks:
+  # Both containers are on the shared proxy network and there is no private
+  # network for this stack, which is a departure from homelable and worth the
+  # sentence.
+  #
+  # Homelable's backend is kept off `proxy` because nothing outside that stack
+  # has any business reaching it. Here, things do: Caddy needs ollama for
+  # llm.<domain>, and Home Assistant - which is a container, and therefore
+  # locked out of every hostname in the LAN-only block - can only ever reach it
+  # as http://ollama:11434 over a shared network.
+  #
+  # The cost is real and should be stated: any container on `proxy` can drive
+  # the Ollama API, which includes deleting models. That is the same trust
+  # boundary every other service on this network already sits inside, and the
+  # thing being risked is a re-downloadable file.
+  proxy:
+    external: true
