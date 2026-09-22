@@ -796,69 +796,26 @@ If the map ever moves that fetch server-side, this stops working from the LAN an
 the only fix is public exposure — at which point it becomes a decision to make
 here rather than a mechanism to repair. Nothing else in the house is affected.
 
-## Ollama is the third tenant on the 3080
+## Ollama — added, then removed
 
-Frigate and Immich already share the card
-([amendment](#amendment-frigate-moves-to-the-3080)). Ollama makes three, and it
-is not the same kind of tenant as the other two.
+Added 2026-09-01 as a third tenant on the 3080 (Ollama + Open WebUI at
+`ai.<domain>` and `llm.<domain>`, both LAN-only). Removed 2026-09-22; the stack,
+its docs and its Caddy routes are gone from the repo, and nothing else depended
+on it.
 
-That amendment's reasoning was about **compute**: a continuous workload and a
-bursty one competing for the card, which CUDA time-slices, so the cost is
-latency during imports and nothing worse. A language model competes for
-**memory**, and memory does not time-slice. It is allocated up front, in
-multiple gigabytes, the moment somebody types.
+Two things learned are worth keeping if local models ever come back:
 
-Three things make that acceptable rather than reckless:
+- **A model competes for VRAM, not compute.** Frigate and Immich share the card
+  because CUDA time-slices compute. A language model allocates gigabytes up
+  front, so it needs hard caps (`OLLAMA_MAX_LOADED_MODELS=1` — upstream defaults
+  to three per GPU — plus `NUM_PARALLEL=1`, `KEEP_ALIVE=5m`,
+  `KV_CACHE_TYPE=q8_0`). Over budget, Ollama silently falls back to CPU rather
+  than crashing Frigate; `ollama ps` showing any CPU % is the tell.
+- **Measured idle headroom, 2026-09-01:** 8874 MiB free of 10240, with Frigate's
+  detector at ~260 MiB and ~239 MiB of NVDEC per camera. That is roughly a
+  7.6GB model at most; 14B-and-up does not fit beside a live NVR.
 
-- **The failure mode is gentle.** Ollama does not evict Frigate and does not
-  crash it. When the VRAM is not there it offloads layers to the CPU and gets
-  very slow. The NVR stays up; the chat crawls. A shared card would not be
-  worth it if the third tenant could take down the first.
-- **The tenancy is temporary by default.** `OLLAMA_KEEP_ALIVE=5m` returns the
-  memory five minutes after a conversation ends, so Frigate has the card to
-  itself for most of the day. The price is a cold start on the first message,
-  which is the cheapest thing being traded anywhere in this stack.
-- **The demand is capped.** `OLLAMA_MAX_LOADED_MODELS=1` overrides an upstream
-  default of *three models per GPU* — 15GB of intent against a 10GB card. The
-  other two settings (`NUM_PARALLEL`, `KV_CACHE_TYPE`) bound the context cache
-  the same way.
-
-What this rules out is model size, permanently: nothing above roughly 8GB at
-Q4 will fit alongside a live NVR, so 14B-and-up is not a thing this box does.
-That is a real capability ceiling and it is the price of not buying a second
-card.
-
-Reversible in the sense that matters — `docker compose down` in
-`stacks/ollama` gives the card back entirely, with nothing else to undo.
-
-See [ollama.md](ollama.md#the-vram-budget).
-
-## Models are content, not configuration
-
-`/srv/ollama` is not in git, is not rendered from Infisical, and is not
-reproduced by a deploy. Which models exist on the box is whatever was pulled
-last.
-
-This looks at first like the drift this repo exists to prevent — it is not, and
-the distinction is worth writing down because it will come up again. The rule
-against UI drift ([git is the source of truth](#git-is-the-source-of-truth-with-no-ui-allowed-to-compete))
-is about **configuration**: things that silently change how a service behaves,
-where "what is running" and "what is in git" diverge with no way to tell. A
-pulled model is not that. It is content in a data volume, the same category as
-the photo library and Frigate's clips — neither of which is in git either, and
-nobody calls that drift.
-
-The line: **the repo reproduces the environment, not the contents of `/srv`.**
-The environment here is the compose file, and in particular the four variables
-that bound VRAM — those are behavior and they are tracked.
-
-One consequence follows and it is the useful half of this decision.
-`/srv/ollama` is the only data directory on the box that should be **excluded**
-from backups: everything in it is a re-downloadable artifact with a name, it is
-the directory most likely to reach tens of gigabytes while models are being
-tried, and a rebuilt `forge` re-pulls it in minutes. `/srv/openwebui` is the
-opposite and needs backing up like Immich's — accounts, conversations, uploaded
-documents and the index built from them exist nowhere else.
+The git history before this removal has the full compose file and docs.
 
 ## Still open
 - **A backup for Home Assistant's data directory.** HA Container has no backup
@@ -894,11 +851,3 @@ documents and the index built from them exist nowhere else.
 - **Remote access for administration.** Tailscale remains the low-risk answer
   and is now complementary rather than an alternative — public 443 for Immich,
   Tailscale for everything that should never be public.
-- **A backup exclusion for `/srv/ollama`.** The rule is decided
-  ([models are content](#models-are-content-not-configuration)); nothing
-  enforces it yet, and the directory grows every time a model is tried.
-- **Home Assistant as a local conversation agent.** Ollama can serve HA's voice
-  pipeline, which takes the cloud out of voice commands. It wants a resident
-  model, which means giving up `OLLAMA_KEEP_ALIVE=5m` and subtracting a model's
-  full size from Frigate's headroom permanently. See
-  [ollama.md](ollama.md#still-open).
