@@ -91,7 +91,7 @@ for d in /srv/immich/data /srv/caddy /srv/infisical /srv/backups/infisical \
          /srv/frigate/media /srv/frigate/models /srv/homeassistant/config \
          /srv/beszel/data /srv/beszel/agent /srv/beszel/socket /srv/.beszel \
          /srv/satisfactory /srv/satisfactory/latest \
-         /srv/homelable/data; do
+         /srv/homelable/data /srv/valheim/config /srv/valheim/server; do
   if [[ ! -d "$d" ]]; then
     sudo mkdir -p "$d"
     sudo chown "$(id -u):$(id -g)" "$d"
@@ -159,6 +159,8 @@ fi
 # cannot carry at all. `satisfactory` publishes 7777/udp, 7777/tcp and
 # 8888/tcp because the game protocol leaves no other option -
 # docs/decisions.md#satisfactory-publishes-ports-and-caddy-cannot-help.
+# `valheim` publishes 2456-2457/udp for the same reason -
+# docs/decisions.md#valheim-publishes-ports-for-the-same-reason.
 #
 # Adding a THIRD name here is a decision to document in docs/decisions.md, not
 # a quick fix. The bar is "a reverse proxy physically cannot carry this
@@ -172,7 +174,7 @@ fi
 # Note this only catches ports published on all interfaces. A port deliberately
 # bound to the LAN address alone (`10.0.0.4:8554:8554`) never matches in the
 # first place, which is the documented way to expose something on purpose.
-ALLOWED_PUBLISHERS='caddy|satisfactory'
+ALLOWED_PUBLISHERS='caddy|satisfactory|valheim'
 strays=$(docker ps --format '{{.Names}}|{{.Ports}}' \
   | grep -E '0\.0\.0\.0:|:::' \
   | grep -vE "^($ALLOWED_PUBLISHERS)\|" | cut -d'|' -f1 || true)

@@ -91,6 +91,9 @@ required_vars() {
     # Entered explicitly rather than left out, so bootstrap.sh check 6c reads
     # this as "considered and empty" instead of "someone forgot".
     satisfactory)  echo "" ;;
+    # Upstream falls back to the literal password "secret" when this is unset.
+    # Named SERVER_PASS, not VALHEIM_*, so check 6d can match it.
+    valheim)       echo "SERVER_PASS" ;;
     *)             echo "__NO_ENTRY__" ;;
   esac
 }

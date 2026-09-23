@@ -634,6 +634,23 @@ drop the router forwards, and run it LAN-only or over Tailscale. Nothing about
 the stack's data or config depends on being public — see
 [satisfactory.md](satisfactory.md#exposure).
 
+## Valheim publishes ports, for the same reason
+
+Added 2026-09-22 as the third name in `ALLOWED_PUBLISHERS`. It clears the bar
+[Satisfactory set](#satisfactory-publishes-ports-and-caddy-cannot-help) on the
+same grounds: the game is raw UDP (2456 game, 2457 Steam query), there is no
+HTTP request for Caddy to route, and the choice is publishing or not running it.
+
+The exposure is the same class and bounded the same way: a game binary on the
+WAN, guarded by the server password, not on `proxy`, no socket, one extra
+capability (`SYS_NICE`, which only lets it raise its own CPU priority). Two
+differences make it slightly smaller than Satisfactory's: it has no admin API
+port, and it is not listed in the community browser, so it is found only by
+someone who already has the address.
+
+The reversal is the same too: drop it from `ALLOWED_PUBLISHERS` and the router,
+`docker compose down`, keep `/srv/valheim/config` if the world matters.
+
 ## Homelable is LAN-only, and that is not a "for now"
 
 Added 2026-08-13. A visual canvas for the network — you draw the house, it

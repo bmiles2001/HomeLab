@@ -1,0 +1,109 @@
+name: valheim
+
+# Valheim dedicated server.
+#
+# Deploy:  ./scripts/deploy.sh valheim
+#
+# Upstream:  https://github.com/community-valheim-tools/valheim-server-docker
+#            (formerly lloesche/valheim-server - same project, new home)
+# Punchlist: docs/valheim-punchlist.md
+#
+# Same shape as stacks/satisfactory, for the same reason: the game speaks raw
+# UDP, which Caddy cannot carry, so this stack PUBLISHES PORTS, is NOT on the
+# `proxy` network, and is reachable from the internet on those ports. It is the
+# third name in bootstrap.sh's ALLOWED_PUBLISHERS - see
+# docs/decisions.md#valheim-publishes-ports-for-the-same-reason.
+#
+# One secret: SERVER_PASS, from infisical:/valheim. Named exactly as the
+# container reads it (not VALHEIM_*) so bootstrap.sh check 6d can match it
+# against the running container's environment. Upstream's default when the
+# variable is absent is the literal string "secret", which is why this is in
+# required_vars() rather than left to a default.
+
+services:
+  valheim:
+    container_name: valheim
+    hostname: valheim
+
+    # Pins the CONTAINER, not the game. The game itself is fetched by SteamCMD
+    # from the public branch and kept current by UPDATE_CRON below, so this is
+    # on Valheim 1.0.x regardless of the tag here.
+    image: ghcr.io/community-valheim-tools/valheim-server:${VALHEIM_VERSION:-latest}
+    restart: unless-stopped
+
+    # The server saves the world on SIGINT. Docker's default 10s grace is not
+    # enough for a large world, and a SIGKILL mid-save is how worlds get
+    # corrupted. Upstream asks for 120s.
+    stop_grace_period: 2m
+
+    # Lets the server raise its own CPU priority. Optional upstream; the game
+    # is single-thread bound and shares forge with an NVR, so it earns it.
+    cap_add:
+      - SYS_NICE
+
+    environment:
+      TZ: ${TZ:-America/Chicago}
+
+      # Upstream defaults to root (0). bootstrap.sh creates /srv/valheim owned
+      # by 1000:1000, and a mismatch here is the permission-denied failure the
+      # 1.0 upgrade thread upstream is full of.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+
+      SERVER_NAME: ${VALHEIM_SERVER_NAME:-forge}
+      WORLD_NAME: ${VALHEIM_WORLD_NAME:-Dedicated}
+
+      # Min. 5 characters, and must not contain the server name - the server
+      # refuses to start otherwise.
+      SERVER_PASS: ${SERVER_PASS:-}
+
+      # Not listed in the in-game Community browser. Friends join by IP with
+      # the password; nothing about that needs the listing.
+      SERVER_PUBLIC: "false"
+
+      # Steam-only. `true` moves matchmaking to PlayFab for Xbox/Game Pass/
+      # console players and opens 2458/udp as well. Not needed here.
+      CROSSPLAY: "false"
+
+      # Space-separated SteamID64s. Admins can kick/ban and use the F5 console.
+      # Written to /config/adminlist.txt on start.
+      ADMINLIST_IDS: ${VALHEIM_ADMINLIST_IDS:-}
+
+      # Upstream defaults, written out because they are the knobs worth knowing:
+      # updates checked every 15 min, applied only when nobody is connected;
+      # hourly world backups kept 3 days; daily restart at 05:10 if idle.
+      UPDATE_CRON: "*/15 * * * *"
+      UPDATE_IF_IDLE: "true"
+      BACKUPS: "true"
+      BACKUPS_CRON: "5 * * * *"
+      BACKUPS_MAX_AGE: "3"
+      RESTART_CRON: "10 5 * * *"
+      RESTART_IF_IDLE: "true"
+
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+
+      # worlds_local/  THE WORLD. The only irreplaceable thing on this stack.
+      # backups/       hourly zips of it - same disk, so corruption cover only
+      # adminlist.txt  generated from ADMINLIST_IDS
+      - ${VALHEIM_DATA:-/srv/valheim}/config:/config
+
+      # ~1GB server install. Outside the container so a recreate does not
+      # re-download it. Safe to delete: if the server ever fails with
+      # "UnityPlayer.so: cannot open shared object file", stop the stack,
+      # empty this directory, and start it again.
+      - ${VALHEIM_DATA:-/srv/valheim}/server:/opt/valheim
+
+    ports:
+      # 2456/udp game, 2457/udp Steam query. Both forwarded on the router.
+      # All interfaces on purpose, so forwarded WAN traffic reaches them.
+      - '2456-2457:2456-2457/udp'
+
+    # Upstream: ~2.8GB resident idle, 4GB minimum, 8GB recommended. The
+    # ceiling keeps a big world from winning an OOM fight with Frigate.
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G

@@ -26,6 +26,8 @@ stacks/
                       services in the same stack point latest.sav at the newest
                       save and serve it to the satisfactory-calculator
                       interactive map.
+  valheim/            valheim dedicated server. publishes 2456-2457/udp for the
+                      same reason satisfactory does; friends join by IP.
   homelable/          visual map of the house network. the backend does the
                       scanning and is not on the proxy network; the frontend's
                       nginx proxies /api to it by a hardcoded name.
@@ -67,6 +69,7 @@ docs/
                              what the bridged scanner cannot see
   komodo.md                  what komodo owns (nothing), the tmpfs .env, and
                              the periphery key exchange
+  valheim-punchlist.md       ordered deploy steps. delete when ticked off
   decisions.md               why this is shaped the way it is
 home-server-build-plan.md    hardware, BIOS, storage, GPU, everything non-container
 ```
