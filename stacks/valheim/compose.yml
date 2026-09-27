@@ -65,6 +65,13 @@ services:
       # console players and opens 2458/udp as well. Not needed here.
       CROSSPLAY: "false"
 
+      # World modifiers, passed straight to the server binary. `portals casual`
+      # lets ore and metal through portals (vanilla blocks them). Other values:
+      # `hard`, `veryhard`. Some modifiers can affect achievements - check
+      # before adding more. Takes effect on the next restart; backups in
+      # /config/backups predate any change here if it needs undoing.
+      SERVER_ARGS: "-modifier portals casual"
+
       # Space-separated SteamID64s. Admins can kick/ban and use the F5 console.
       # Written to /config/adminlist.txt on start.
       ADMINLIST_IDS: ${VALHEIM_ADMINLIST_IDS:-}
